@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vision-ai-label-inspection"
+version = "0.1.0"
+description = "Modular OCR and label inspection pipeline"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python-headless>=4.8",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+detector = [
+    "torch>=2.2",
+    "ultralytics>=8.2",
+]
+ocr = [
+    "paddleocr>=3.0",
+]
+barcode = [
+    "zxing-cpp>=2.3",
+]
+transport = [
+    "redis>=5.0",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra"
+markers = [
+    "integration: local integration test using real image processing",
+    "runtime: requires an external runtime/model/source",
+    "requires_paddle: requires PaddleOCR and PaddlePaddle",
+    "requires_zxing: requires the zxing-cpp Python binding",
+    "requires_rtsp: requires VISION_RTSP_URL and VISION_RUN_RUNTIME_TESTS=1",
+]

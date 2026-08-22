@@ -65,6 +65,7 @@ def test_zxing_real_shape_position_is_json_safe_and_uses_valid_field(monkeypatch
     payload = InspectionResult(event_id="INS-ZX", camera_id="CAM", barcode=barcode).to_dict()
 
     assert barcode.valid is False
+    assert payload["barcode"]["status"] == "SUCCESS"
     assert barcode.position == {
         "top_left": [1.0, 2.0],
         "top_right": [30.0, 2.0],

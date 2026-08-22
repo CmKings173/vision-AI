@@ -138,6 +138,7 @@ class BarcodeResult:
             "error": self.error,
             "success": self.success,
             "state": self.state,
+            "status": self.state,
             "error_code": self.error_code,
             "error_message": self.error_message,
         }

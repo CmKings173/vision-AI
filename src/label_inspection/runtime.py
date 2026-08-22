@@ -141,7 +141,15 @@ def _tensorrt_checks(
     tensorrt_check, tensorrt = _import_module(
         "TensorRT import", "tensorrt", importer=importer
     )
-    cuda_check, _ = _import_module("CUDA Python import", "cuda", importer=importer)
+    cuda_check, _ = _import_module(
+        "CUDA Python import", "cuda.bindings.runtime", importer=importer
+    )
+    if cuda_check.status != "PASS":
+        legacy_cuda_check, _ = _import_module(
+            "CUDA Python import", "cuda.cudart", importer=importer
+        )
+        if legacy_cuda_check.status == "PASS":
+            cuda_check = legacy_cuda_check
     checks.extend([tensorrt_check, cuda_check])
     if tensorrt is None:
         checks.append(RuntimeCheck("TensorRT builder", "unavailable: import failed", "FAIL"))

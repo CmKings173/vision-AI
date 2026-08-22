@@ -113,7 +113,7 @@ def test_tensorrt_runtime_checks_do_not_require_paddle(tmp_path):
         "numpy": types.SimpleNamespace(__version__="2.fake"),
         "zxingcpp": types.SimpleNamespace(__version__="2.fake"),
         "tensorrt": FakeTensorRT,
-        "cuda": types.SimpleNamespace(),
+        "cuda.bindings.runtime": types.SimpleNamespace(),
     }
     det = tmp_path / "det.engine"
     rec = tmp_path / "rec.engine"

@@ -53,9 +53,15 @@ class TensorRTEngineRunner:
         except Exception as exc:  # pragma: no cover - target-runtime branch
             raise RuntimeError("TENSORRT_DEPENDENCY_MISSING") from exc
         try:
-            from cuda import cudart
-        except Exception as exc:  # pragma: no cover - target-runtime branch
-            raise RuntimeError("CUDA_PYTHON_DEPENDENCY_MISSING") from exc
+            # cuda-python 13.x exposes the low-level runtime as
+            # ``cuda.bindings.runtime``. Older releases exposed the same API
+            # as ``cuda.cudart``; keep both layouts working for GX10 images.
+            from cuda.bindings import runtime as cudart
+        except Exception:
+            try:
+                from cuda import cudart  # type: ignore[attr-defined]
+            except Exception as exc:  # pragma: no cover - target-runtime branch
+                raise RuntimeError("CUDA_PYTHON_DEPENDENCY_MISSING") from exc
 
         self._trt = trt
         self._cudart = cudart

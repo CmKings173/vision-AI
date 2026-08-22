@@ -24,6 +24,7 @@ ocr = [
 ocr-tensorrt = [
     "tensorrt-cu13>=11.2",
     "cuda-python>=12.0",
+    "cuda-bindings>=12.0",
 ]
 barcode = [
     "zxing-cpp>=2.3",

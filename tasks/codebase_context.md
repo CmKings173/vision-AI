@@ -93,6 +93,11 @@ runner. Các entrypoint thực tế đều là `scripts/*.py`; mỗi script tự
 | `python scripts/benchmark_selector.py ...` | So sánh full-frame score cũ với preview score | JSON benchmark, không phải production path |
 | `python scripts/build_tensorrt_engine.py ...` | Tool build artifact | ghi `.engine` ra path chỉ định; cần TensorRT/ONNX/GPU target |
 
+`manual_rtsp_inspection.py` is the direct phone-camera POC entrypoint: it uses
+the same `RTSPCamera`/`CameraSource` boundary for an RTSP or HTTP URL, keeps
+`CameraAcquisition` feeding the bounded `FrameBuffer`, and waits for a manual
+Enter trigger (or `--trigger-after-s`) before calling the pipeline once.
+
 ### 3.2 Image flow
 
 ```text
@@ -133,6 +138,14 @@ inspect_rtsp.py / camera_smoke.py
 `RTSPCamera.health` theo dõi connected/stale/frame count/last error/reconnect
 count. Việc `release()` có hủy được native OpenCV/FFmpeg read hay không vẫn là
 assumption cần verify trên GX10; controller chỉ có bounded join.
+
+`resolve_camera_source()` không giới hạn scheme ở `rtsp://`: URL HTTP cũng được
+truyền nguyên vẹn tới cùng `RTSPCamera`/OpenCV backend. Vì vậy POC dùng app IP
+Cam trên Android có thể feed trực tiếp RTSP hoặc HTTP URL vào `CameraSource`,
+không có MediaMTX trong data path. `manual_rtsp_inspection.py` giữ acquisition
+chạy liên tục, chờ frame đầu tiên, sau đó dùng Enter (hoặc `--trigger-after-s`)
+làm manual trigger để snapshot các frame còn fresh trong ring buffer và gọi
+`InspectionPipeline.inspect_packets()` đúng một lần.
 
 ### 3.4 Video flow
 
@@ -611,6 +624,10 @@ Real-runtime entrypoints:
 - `scripts/run_real_rtsp_integration.py`: real RTSP acquisition, bounded
   buffer/stale accounting, selected frame/crop score, and the same OCR/barcode
   pipeline. Run it only after image integration has passed.
+- `scripts/manual_rtsp_inspection.py`: direct Android IP Cam RTSP/HTTP URL,
+  `CameraAcquisition` -> `FrameBuffer`, manual Enter/timed trigger, then the
+  same Top-K -> FixedROI -> PP-OCRv6 -> ZXing -> JSON path. It is the POC path
+  for a phone camera and does not require MediaMTX.
 
 The repository does not claim GX10 runtime completion from unit or mock tests.
 `python -m compileall -q src scripts tests` is only a local syntax check; the

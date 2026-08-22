@@ -103,6 +103,9 @@ def test_rtsp_env_is_default_and_cli_source_has_explicit_precedence(monkeypatch)
         resolve_camera_source("rtsp://cli-host/stream", configured)
         == "rtsp://cli-host/stream"
     )
+    assert resolve_camera_source("http://phone-host:8080/video", None) == (
+        "http://phone-host:8080/video"
+    )
 
 
 def test_missing_rtsp_source_fails_clearly(monkeypatch):

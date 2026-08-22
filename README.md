@@ -110,14 +110,38 @@ python scripts/run_real_image_integration.py \
   --warmup 2 --runs 20
 ```
 
-Only when that command returns image `PASS`, run the real phone RTSP path:
+Only when that command returns image `PASS`, run the direct phone-camera path.
+The existing IP Cam app supplies the URL; no MediaMTX or intermediate relay is
+needed. `RTSPCamera` passes the URL to OpenCV, so both RTSP and HTTP camera
+URLs are accepted when the GX10 OpenCV/FFmpeg build supports that stream:
 
 ```bash
-export VISION_RTSP_URL='rtsp://user:password@host:port/path'
-python scripts/run_real_rtsp_integration.py \
-  --max-frames 30 --timeout-s 15 \
+export VISION_RTSP_URL='rtsp://PHONE_IP:PORT/PATH'
+# Or, for an HTTP/MJPEG endpoint:
+# export VISION_RTSP_URL='http://PHONE_IP:PORT/PATH'
+export OPENCV_FFMPEG_CAPTURE_OPTIONS='rtsp_transport;tcp'
+python scripts/manual_rtsp_inspection.py \
+  --source "$VISION_RTSP_URL" \
   --roi 0,0,1,1 --device gpu:0 \
   --required-fields tracking_number,order_id
+```
+
+The command first waits for a frame and prints the camera/buffer state. Put a
+label in view, then press Enter to trigger one inspection. The trigger snapshots
+the fresh ring-buffer frames, ranks Top-K, applies FixedROI, and runs one
+PP-OCRv6 + ZXing pass before printing the final JSON. Use a larger window when
+phone Wi-Fi jitter makes the latest frames stale:
+
+```bash
+export VISION_BUFFER_WINDOW_MS=2000
+```
+
+For a non-interactive timing test, add `--trigger-after-s 5`. To verify only
+the direct URL before running the full pipeline, use:
+
+```bash
+python scripts/camera_smoke.py --source "$VISION_RTSP_URL" \
+  --max-frames 10 --timeout-s 15
 ```
 
 These commands print JSON evidence for OCR lines, extracted fields, barcode
@@ -192,7 +216,9 @@ phone RTSP, OCR accuracy, latency p50/p95, and camera-specific quality
 thresholds must still be measured on the target system.
 
 RTSP reads run on an independent daemon and the controller has a bounded wait.
-OpenCV/FFmpeg native-read cancellation after `release()` is backend-specific
+The manual direct-camera entrypoint uses the same daemon and bounded
+`FrameBuffer`; it does not add MediaMTX. OpenCV/FFmpeg native-read cancellation
+after `release()` is backend-specific
 and must still be verified on GX10 under packet loss and camera disconnects.
 Smoke exit codes are deterministic: `0` completed (including REVIEW/FAIL
 business decisions), `1` capture/pipeline runtime failure, and `2` invalid or

@@ -10,7 +10,7 @@ def resolve_camera_source(cli_source: str | None, configured_source: str | None)
 
     source = (cli_source or configured_source or "").strip()
     if not source:
-        raise ValueError("RTSP source is required via --source or VISION_RTSP_URL")
+        raise ValueError("Camera source is required via --source or VISION_RTSP_URL")
     return source
 
 

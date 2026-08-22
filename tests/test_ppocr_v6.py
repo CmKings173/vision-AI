@@ -57,3 +57,29 @@ def test_ppocr_v6_load_failure_is_structured(monkeypatch):
     assert not result.success
     assert result.error_code == "PP-OCRV6_DEPENDENCY_MISSING"
     assert result.backend == "transformers"
+
+
+def test_ppocr_v6_warmup_makes_adapter_ready_and_is_separate_from_recognize(monkeypatch):
+    calls = []
+
+    class FakeOCR:
+        def __init__(self, **kwargs):
+            calls.append(("load", kwargs))
+
+        def predict(self, image):
+            calls.append(("predict", image))
+            return [{"rec_texts": [], "rec_scores": [], "rec_polys": []}]
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "paddleocr",
+        SimpleNamespace(PaddleOCR=FakeOCR),
+    )
+    adapter = PPOCRV6TransformersAdapter(device="gpu:0")
+
+    warmup = adapter.warmup(object())
+
+    assert warmup.success
+    assert adapter.ready is True
+    assert adapter.warmup_ms > 0
+    assert len([item for item in calls if item[0] == "predict"]) == 1

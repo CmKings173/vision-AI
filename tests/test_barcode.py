@@ -73,3 +73,14 @@ def test_zxing_real_shape_position_is_json_safe_and_uses_valid_field(monkeypatch
         "bottom_left": [1.0, 40.0],
     }
     json.dumps(payload)
+
+
+def test_zxing_prepare_loads_runtime_before_first_decode(monkeypatch):
+    fake = types.SimpleNamespace(read_barcodes=lambda image: [])
+    monkeypatch.setitem(__import__("sys").modules, "zxingcpp", fake)
+    decoder = ZXingBarcodeDecoder(use_variants=False)
+
+    assert decoder.ready is False
+    assert decoder.prepare() is True
+    assert decoder.ready is True
+    assert decoder.decode(object())[0].value is None

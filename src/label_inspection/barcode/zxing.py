@@ -14,6 +14,15 @@ class ZXingBarcodeDecoder:
         self.use_variants = use_variants
         self._zxing = None
 
+    @property
+    def ready(self) -> bool:
+        return self._zxing is not None
+
+    def prepare(self) -> bool:
+        """Load ZXing-C++ before the runtime announces SYSTEM READY."""
+
+        return self._load() is not None
+
     def _load(self):
         if self._zxing is None:
             try:

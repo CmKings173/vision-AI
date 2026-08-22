@@ -11,6 +11,7 @@ from .detection.contour import ContourDetector
 from .detection.fixed_roi import FixedROIDetector
 from .detection.ultralytics_detector import UltralyticsLabelDetector
 from .extraction.fields import FieldExtractor
+from .extraction.profiles import build_extractor
 from .ocr.ppocr import PPOCRAdapter
 from .ocr.ppocr_v6 import PPOCRV6TransformersAdapter
 from .ocr.tensorrt_ocr import TensorRTOCRAdapter
@@ -39,10 +40,14 @@ def build_pipeline(config: Settings = settings) -> InspectionPipeline:
     else:
         raise ValueError(f"unsupported detector: {config.detector}")
 
-    # Keep SKU and LOT in the JSON even when only SKU is a PASS requirement;
-    # this preserves evidence for later business-rule changes.
-    extractor_fields = tuple(dict.fromkeys(("sku", "lot", *config.required_fields)))
-    extractor = FieldExtractor(fields=extractor_fields)
+    profile = config.extraction_profile.strip().lower().replace("-", "_")
+    if profile == "default":
+        # Keep SKU and LOT in the JSON even when only SKU is a PASS requirement;
+        # this preserves evidence for later business-rule changes.
+        extractor_fields = tuple(dict.fromkeys(("sku", "lot", *config.required_fields)))
+        extractor = FieldExtractor(fields=extractor_fields)
+    else:
+        extractor = build_extractor(profile)
     validator = LabelValidator(
         required_fields=config.required_fields,
         barcode_required=config.barcode_required,

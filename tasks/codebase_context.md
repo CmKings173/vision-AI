@@ -262,6 +262,16 @@ chúng như “dead code” nếu chưa quyết định public contract.
 | `extraction/fields.py` | Regex extraction SKU/LOT plus optional Shopee tracking/order fields, giữ source line/confidence | Active; Shopee profile is opt-in through required fields |
 | `validation/rules.py` | Required fields, field patterns, confidence threshold, barcode/quality rules | Active deterministic business gate |
 
+`extraction/profiles.py` defines the named `dgx_spark_label` profile with only
+`customer_part_number`, `so_number`, `our_part_number`, `quantity`,
+`net_weight`, `gross_weight`, and `carton_number`. The profile is selected by
+`VISION_EXTRACTION_PROFILE` and does not add Shopee tracking/order fields.
+
+`preprocessing/orientation.py` applies an explicit clockwise 0/90/180/270
+rotation before FixedROI and OCR. `artifacts.py` persists each completed
+inspection under `<debug_dir>/<event_id>/selected_frame.jpg`,
+`label_crop.jpg`, and `result.json`.
+
 ### Script/test/documentation-only code
 
 - `scripts/benchmark_selector.py::legacy_full_frame_score` là baseline benchmark,
@@ -295,6 +305,7 @@ không tự động được đọc; cần copy thành `.env` hoặc export env.
 | `VISION_MAX_FRAME_AGE_MS` | `1000` | selector/candidate freshness/RTSP health |
 | `VISION_RTSP_OPEN_TIMEOUT_MS` | `5000` | OpenCV open timeout hint |
 | `VISION_RTSP_READ_TIMEOUT_MS` | `2000` | OpenCV read timeout hint |
+| `VISION_CAMERA_ROTATE_DEG` | `0` | clockwise orientation before FixedROI/OCR; only `0/90/180/270` |
 | `VISION_TOP_K` | `3` | số frame được preselect và số candidate budget |
 | `VISION_FRAME_PREVIEW_LONG_EDGE` | `480` | preview selection; bắt buộc `320..640` |
 
@@ -337,6 +348,7 @@ không tự động được đọc; cần copy thành `.env` hoặc export env.
 |---|---:|---|
 | `VISION_BARCODE_ENGINE` | `zxing` | V1 chỉ chấp nhận `zxing` |
 | `VISION_REQUIRED_FIELDS` | `sku` | comma-separated; pipeline luôn extract SKU và LOT nhưng chỉ field này bắt buộc theo default |
+| `VISION_EXTRACTION_PROFILE` | `default` | named profile; `dgx_spark_label` exposes only the seven DGX Spark label fields |
 | `VISION_BARCODE_REQUIRED` | `false` | barcode missing trở thành `REVIEW` nếu true |
 | `VISION_QUALITY_MIN_WIDTH` | `32` | crop min width |
 | `VISION_QUALITY_MIN_HEIGHT` | `16` | crop min height |
@@ -610,6 +622,13 @@ unwarping flags disabled, and loads the predictor once per process. It returns
 `RawOCRResult` with engine/backend/device/model metadata, raw OCR lines, and
 JSON-safe state/status fields.
 
+`PPOCRV6TransformersAdapter.warmup()` loads and executes one untimed inference
+before the manual RTSP process connects the camera. `ZXingBarcodeDecoder.prepare()`
+loads the barcode runtime in the same startup gate. The manual process emits
+`SYSTEM READY` only after both runtimes are ready and the camera has a fresh
+frame; subsequent Enter triggers reuse the resident OCR model in one process,
+so model load/warmup is excluded from per-inspection `ocr_ms`.
+
 `app.build_pipeline()` remains the only production wiring point. The GX10 path
 uses FixedROI, ZXing-C++, and one selected crop for OCR/barcode. Required fields
 are appended to the evidence extractor, so the Shopee profile can validate
@@ -631,9 +650,11 @@ Real-runtime entrypoints:
   buffer/stale accounting, selected frame/crop score, and the same OCR/barcode
   pipeline. Run it only after image integration has passed.
 - `scripts/manual_rtsp_inspection.py`: direct Android IP Cam RTSP/HTTP URL,
-  `CameraAcquisition` -> `FrameBuffer`, manual Enter/timed trigger, then the
-  same Top-K -> FixedROI -> PP-OCRv6 -> ZXing -> JSON path. It is the POC path
-  for a phone camera and does not require MediaMTX.
+  `CameraAcquisition` -> `FrameBuffer`, warmed resident OCR, manual Enter/timed
+  trigger loop, orientation normalization, calibrated FixedROI, and the same
+  Top-K -> PP-OCRv6 -> ZXing -> DGX Spark profile -> JSON path. Each completed
+  event writes selected frame/crop/result artifacts by event ID. It is the POC
+  path for a phone camera and does not require MediaMTX.
 
 The repository does not claim GX10 runtime completion from unit or mock tests.
 `python -m compileall -q src scripts tests` is only a local syntax check; the

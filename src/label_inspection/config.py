@@ -49,6 +49,9 @@ class Settings:
     rtsp_read_timeout_ms: int = field(
         default_factory=lambda: int(os.getenv("VISION_RTSP_READ_TIMEOUT_MS", "2000"))
     )
+    camera_rotate_degrees: int = field(
+        default_factory=lambda: int(os.getenv("VISION_CAMERA_ROTATE_DEG", "0"))
+    )
     top_k: int = field(default_factory=lambda: int(os.getenv("VISION_TOP_K", "3")))
     frame_preview_long_edge: int = field(
         default_factory=lambda: int(os.getenv("VISION_FRAME_PREVIEW_LONG_EDGE", "480"))
@@ -116,6 +119,9 @@ class Settings:
         default_factory=lambda: os.getenv("VISION_BARCODE_ENGINE", "zxing")
     )
     required_fields: tuple[str, ...] = field(default_factory=lambda: _required_fields())
+    extraction_profile: str = field(
+        default_factory=lambda: os.getenv("VISION_EXTRACTION_PROFILE", "default")
+    )
     barcode_required: bool = field(
         default_factory=lambda: _bool("VISION_BARCODE_REQUIRED", False)
     )
@@ -184,6 +190,8 @@ class Settings:
             raise ValueError("VISION_MAX_FRAME_AGE_MS must be >= 1")
         if self.rtsp_open_timeout_ms < 1 or self.rtsp_read_timeout_ms < 1:
             raise ValueError("RTSP timeout values must be >= 1 ms")
+        if self.camera_rotate_degrees not in {0, 90, 180, 270}:
+            raise ValueError("VISION_CAMERA_ROTATE_DEG must be one of 0, 90, 180, or 270")
         detector = self.detector.strip().lower().replace("_", "-")
         if detector not in {"fixedroi", "fixed-roi", "roi", "contour", "contours", "ultralytics", "yolo"}:
             raise ValueError(f"unsupported detector: {self.detector}")
@@ -227,6 +235,11 @@ class Settings:
                 raise ValueError("VISION_OCR_DET_MIN_BOX_SIZE must be >= 1")
         if self.barcode_engine.strip().lower() != "zxing":
             raise ValueError("VISION_BARCODE_ENGINE must be 'zxing' for V1")
+        profile = self.extraction_profile.strip().lower().replace("-", "_")
+        if profile not in {"default", "dgx_spark", "dgx_spark_label"}:
+            raise ValueError(
+                "VISION_EXTRACTION_PROFILE must be 'default' or 'dgx_spark_label'"
+            )
         ratios = (
             self.quality_max_underexposed_ratio,
             self.quality_max_overexposed_ratio,

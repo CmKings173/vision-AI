@@ -87,7 +87,6 @@ export VISION_OCR_BACKEND=transformers
 export VISION_OCR_VERSION=PP-OCRv6
 export VISION_OCR_DEVICE=gpu:0
 export VISION_BARCODE_ENGINE=zxing
-export VISION_REQUIRED_FIELDS=tracking_number,order_id
 
 python scripts/check_runtime.py
 python scripts/test_zxing_runtime.py \
@@ -120,17 +119,41 @@ export VISION_RTSP_URL='rtsp://PHONE_IP:PORT/PATH'
 # Or, for an HTTP/MJPEG endpoint:
 # export VISION_RTSP_URL='http://PHONE_IP:PORT/PATH'
 export OPENCV_FFMPEG_CAPTURE_OPTIONS='rtsp_transport;tcp'
+# Replace these calibration values from the saved selected frame. Full-frame
+# 0,0,1,1 is rejected by this acceptance entrypoint.
+export VISION_LABEL_ROI='LABEL_X1,LABEL_Y1,LABEL_X2,LABEL_Y2'
+export VISION_CAMERA_ROTATE_DEG=0
 python scripts/manual_rtsp_inspection.py \
   --source "$VISION_RTSP_URL" \
-  --roi 0,0,1,1 --device gpu:0 \
-  --required-fields tracking_number,order_id
+  --roi "$VISION_LABEL_ROI" \
+  --rotate-deg "$VISION_CAMERA_ROTATE_DEG" \
+  --device gpu:0 \
+  --triggers 10 \
+  --debug-dir artifacts/manual_rtsp_inspection
 ```
 
-The command first waits for a frame and prints the camera/buffer state. Put a
-label in view, then press Enter to trigger one inspection. The trigger snapshots
-the fresh ring-buffer frames, ranks Top-K, applies FixedROI, and runs one
-PP-OCRv6 + ZXing pass before printing the final JSON. Use a larger window when
-phone Wi-Fi jitter makes the latest frames stale:
+The command loads and warms PP-OCRv6, imports/prepares ZXing, then connects the
+camera. It prints `SYSTEM READY` only after OCR, ZXing, and a fresh camera frame
+are ready. Each Enter keeps the same process and resident model, snapshots the
+fresh ring-buffer frames, ranks Top-K, normalizes the configured orientation,
+applies the calibrated FixedROI, and runs one PP-OCRv6 + ZXing pass. It repeats
+for 10 triggers and prints p50/p95 after the loop; model load/warmup is excluded
+from `ocr_ms`.
+
+Each completed event is stored under its event ID:
+
+```text
+artifacts/manual_rtsp_inspection/<event_id>/
+  selected_frame.jpg
+  label_crop.jpg
+  result.json
+```
+
+`selected_frame.jpg` is the oriented frame passed to FixedROI/OCR, and
+`label_crop.jpg` is the crop passed to OCR/ZXing. Use the first saved frame to
+calibrate `VISION_LABEL_ROI` and confirm whether `VISION_CAMERA_ROTATE_DEG`
+must be `90`, `180`, or `270` before the 10-trigger acceptance run. Use a larger
+window when phone Wi-Fi jitter makes the latest frames stale:
 
 ```bash
 export VISION_BUFFER_WINDOW_MS=2000
@@ -144,9 +167,11 @@ python scripts/camera_smoke.py --source "$VISION_RTSP_URL" \
   --max-frames 10 --timeout-s 15
 ```
 
-These commands print JSON evidence for OCR lines, extracted fields, barcode
-format/value/validity/position, selected frame/crop score, and timings. The
-20-run benchmark excludes model load/download time. Unit or mock tests do not
+These commands print JSON evidence for OCR lines, the DGX Spark label fields
+(`customer_part_number`, `so_number`, `our_part_number`, `quantity`,
+`net_weight`, `gross_weight`, `carton_number`), barcode format/value/validity/
+position, selected frame/crop score, artifact paths, and timings. The 10-trigger
+benchmark excludes model load/warmup time. Unit or mock tests do not
 count as GX10 verification. ONNX, Paddle2ONNX, TensorRT, GLM-OCR, Redis,
 GigE, custom YOLO/training, ERP, and scale changes are frozen in this path.
 

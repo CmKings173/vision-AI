@@ -84,6 +84,33 @@ def test_ppocr_v6_transformers_engine_is_wired_without_loading_runtime():
     }
 
 
+def test_dgx_spark_extraction_profile_wires_only_label_fields():
+    pipeline = build_pipeline(
+        valid_settings(
+            extraction_profile="dgx_spark_label",
+            required_fields=(
+                "customer_part_number",
+                "so_number",
+                "our_part_number",
+                "quantity",
+                "net_weight",
+                "gross_weight",
+                "carton_number",
+            ),
+        )
+    )
+
+    assert pipeline.extractor.fields == (
+        "customer_part_number",
+        "so_number",
+        "our_part_number",
+        "quantity",
+        "net_weight",
+        "gross_weight",
+        "carton_number",
+    )
+
+
 def test_tensorrt_ocr_requires_engine_and_dictionary_paths():
     with pytest.raises(ValueError, match="VISION_OCR_DET_ENGINE"):
         valid_settings(ocr_engine="tensorrt").validate()
@@ -120,3 +147,9 @@ def test_frame_preview_long_edge_is_bounded_for_preselection():
     valid_settings(frame_preview_long_edge=640).validate()
     with pytest.raises(ValueError, match="PREVIEW_LONG_EDGE"):
         valid_settings(frame_preview_long_edge=1280).validate()
+
+
+def test_camera_rotation_is_limited_to_quarter_turns():
+    valid_settings(camera_rotate_degrees=90).validate()
+    with pytest.raises(ValueError, match="VISION_CAMERA_ROTATE_DEG"):
+        valid_settings(camera_rotate_degrees=45).validate()

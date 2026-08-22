@@ -25,6 +25,16 @@ class PPOCRV6TransformersAdapter:
         self.ocr_version = ocr_version
         self._ocr = None
         self._load_error: str | None = None
+        self._ready = False
+        self._warmup_ms = 0.0
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
+    @property
+    def warmup_ms(self) -> float:
+        return self._warmup_ms
 
     def _load(self):
         if self._ocr is not None:
@@ -52,6 +62,64 @@ class PPOCRV6TransformersAdapter:
         except Exception:
             self._load_error = "PP-OCRV6_LOAD_ERROR"
         return self._ocr
+
+    def warmup(self, image: object | None = None) -> RawOCRResult:
+        """Load the resident predictor and execute one untimed inference."""
+
+        started = time.perf_counter()
+        ocr = self._load()
+        if ocr is None:
+            self._warmup_ms = (time.perf_counter() - started) * 1000
+            return RawOCRResult(
+                engine=self.engine,
+                elapsed_ms=self._warmup_ms,
+                success=False,
+                error=self._load_error or "PP-OCRV6_NOT_AVAILABLE",
+                error_code=self._load_error or "PP-OCRV6_NOT_AVAILABLE",
+                error_message="PP-OCRv6 Transformers runtime is unavailable.",
+                backend=self.backend,
+                device=self.device,
+                model=self.ocr_version,
+            )
+        try:
+            if not hasattr(ocr, "predict"):
+                raise RuntimeError("PaddleOCR.predict is required for PP-OCRv6")
+            if image is None:
+                import numpy as np
+
+                image = np.zeros((640, 640, 3), dtype=np.uint8)
+            lines = normalize_paddle_result(ocr.predict(image))
+            self._ready = True
+            self._warmup_ms = (time.perf_counter() - started) * 1000
+            return RawOCRResult(
+                engine=self.engine,
+                lines=lines,
+                elapsed_ms=self._warmup_ms,
+                success=True,
+                raw={
+                    "warmup": True,
+                    "line_count": len(lines),
+                    "backend": self.backend,
+                    "device": self.device,
+                    "model": self.ocr_version,
+                },
+                backend=self.backend,
+                device=self.device,
+                model=self.ocr_version,
+            )
+        except Exception:
+            self._warmup_ms = (time.perf_counter() - started) * 1000
+            return RawOCRResult(
+                engine=self.engine,
+                elapsed_ms=self._warmup_ms,
+                success=False,
+                error="PP-OCRV6_WARMUP_ERROR",
+                error_code="PP-OCRV6_WARMUP_ERROR",
+                error_message="PP-OCRv6 Transformers warmup failed.",
+                backend=self.backend,
+                device=self.device,
+                model=self.ocr_version,
+            )
 
     def recognize(self, image: object) -> RawOCRResult:
         started = time.perf_counter()

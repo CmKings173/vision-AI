@@ -59,6 +59,8 @@ class RTSPCamera:
         self._next_retry_at = 0.0
         self._current_delay = self.reconnect_delay_s
         self._lock = threading.Lock()
+        self._read_lock = threading.Lock()
+        self._deferred_disconnect_started = False
         self._open_attempts = 0
         self._frames_received = 0
         self._last_frame_timestamp: Optional[float] = None
@@ -201,14 +203,45 @@ class RTSPCamera:
         except Exception:
             pass
 
-    def _disconnect(self) -> None:
+    @staticmethod
+    def _release_capture(capture) -> None:
+        try:
+            capture.release()
+        except Exception:
+            pass
+
+    def _detach_capture(self):
         with self._lock:
             capture, self._capture = self._capture, None
+        return capture
+
+    def _disconnect_now(self) -> None:
+        capture = self._detach_capture()
         if capture is not None:
+            self._release_capture(capture)
+
+    def _deferred_disconnect(self) -> None:
+        with self._read_lock:
+            self._disconnect_now()
+        with self._lock:
+            self._deferred_disconnect_started = False
+
+    def _disconnect(self) -> None:
+        if self._read_lock.acquire(blocking=False):
             try:
-                capture.release()
-            except Exception:
-                pass
+                self._disconnect_now()
+            finally:
+                self._read_lock.release()
+            return
+        with self._lock:
+            if self._deferred_disconnect_started:
+                return
+            self._deferred_disconnect_started = True
+        threading.Thread(
+            target=self._deferred_disconnect,
+            name="vision-camera-deferred-close",
+            daemon=True,
+        ).start()
 
     def read(self) -> Optional[FramePacket]:
         if self._closed:
@@ -216,37 +249,42 @@ class RTSPCamera:
         if not self.connected and not self.open():
             return None
 
-        with self._lock:
-            capture = self._capture
-        if capture is None:
-            return None
-
-        try:
-            ok, frame = capture.read()
-        except Exception:
-            ok, frame = False, None
-        if not ok or frame is None:
+        with self._read_lock:
+            if self._closed:
+                return None
             with self._lock:
-                self._last_error = "READ_FAILED"
-            self._disconnect()
-            return None
+                capture = self._capture
+            if capture is None:
+                return None
 
-        captured_at = time.time()
-        captured_monotonic = time.monotonic()
-        packet = FramePacket(
-            frame_id=self._frame_id,
-            captured_at=captured_at,
-            frame=frame,
-            source="rtsp",
-            captured_monotonic=captured_monotonic,
-        )
-        with self._lock:
-            self._frame_id += 1
-            self._frames_received += 1
-            self._last_frame_timestamp = captured_at
-            self._last_frame_monotonic = captured_monotonic
-            self._last_error = None
-        return packet
+            try:
+                ok, frame = capture.read()
+            except Exception:
+                ok, frame = False, None
+            if not ok or frame is None:
+                with self._lock:
+                    self._last_error = "READ_FAILED"
+                detached = self._detach_capture()
+                if detached is not None:
+                    self._release_capture(detached)
+                return None
+
+            captured_at = time.time()
+            captured_monotonic = time.monotonic()
+            packet = FramePacket(
+                frame_id=self._frame_id,
+                captured_at=captured_at,
+                frame=frame,
+                source="rtsp",
+                captured_monotonic=captured_monotonic,
+            )
+            with self._lock:
+                self._frame_id += 1
+                self._frames_received += 1
+                self._last_frame_timestamp = captured_at
+                self._last_frame_monotonic = captured_monotonic
+                self._last_error = None
+            return packet
 
     def frames(self, stop_event=None) -> Iterator[FramePacket]:
         while not self._closed and not (stop_event and stop_event.is_set()):

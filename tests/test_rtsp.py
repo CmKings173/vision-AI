@@ -130,6 +130,32 @@ class BlockingOpenCV2(FakeCV2):
         return self.capture
 
 
+class BlockingReadCapture(FakeCapture):
+    def __init__(self):
+        super().__init__()
+        self.read_started = threading.Event()
+        self.resume = threading.Event()
+        self.release_completed = threading.Event()
+        self.released_during_read = False
+
+    def read(self):
+        self.read_started.set()
+        self.resume.wait(1.0)
+        return True, [[1, 2, 3]]
+
+    def release(self):
+        if not self.resume.is_set():
+            self.released_during_read = True
+        super().release()
+        self.release_completed.set()
+
+
+class BlockingReadOpenCV2(FakeCV2):
+    def VideoCapture(self, url, backend):
+        self.capture = BlockingReadCapture()
+        return self.capture
+
+
 def test_close_during_blocking_open_cannot_reanimate_or_leak_capture():
     camera = RTSPCamera("rtsp://test", reconnect_delay_s=0)
     fake_cv2 = BlockingOpenCV2()
@@ -146,3 +172,24 @@ def test_close_during_blocking_open_cannot_reanimate_or_leak_capture():
     assert opened == [False]
     assert fake_cv2.capture.released is True
     assert camera.connected is False
+
+
+def test_close_during_read_defers_release_until_native_read_returns():
+    camera = RTSPCamera("rtsp://test", reconnect_delay_s=0)
+    fake_cv2 = BlockingReadOpenCV2()
+    camera._cv2 = fake_cv2
+    packets = []
+    thread = threading.Thread(target=lambda: packets.append(camera.read()))
+    thread.start()
+
+    assert fake_cv2.capture.read_started.wait(0.2)
+    camera.close()
+
+    assert fake_cv2.capture.released is False
+    fake_cv2.capture.resume.set()
+    thread.join(0.5)
+
+    assert packets[0] is not None
+    assert fake_cv2.capture.release_completed.wait(0.5)
+    assert fake_cv2.capture.released_during_read is False
+    assert fake_cv2.capture.released is True

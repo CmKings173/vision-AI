@@ -129,7 +129,7 @@ inspect_rtsp.py / camera_smoke.py
        -> camera.read / open / reconnect / timeout hints
        -> append FramePacket vào FrameBuffer(deque(maxlen=N))
   -> caller chờ hard deadline, không tự gọi blocking camera I/O
-  -> stop(): set event, best-effort camera.close(), bounded join
+  -> stop(): set event, camera.close() requests shutdown without releasing during read, bounded join
   -> snapshot stale-safe
   -> InspectionPipeline.inspect_packets
 ```
@@ -146,6 +146,12 @@ không có MediaMTX trong data path. `manual_rtsp_inspection.py` giữ acquisiti
 chạy liên tục, chờ frame đầu tiên, sau đó dùng Enter (hoặc `--trigger-after-s`)
 làm manual trigger để snapshot các frame còn fresh trong ring buffer và gọi
 `InspectionPipeline.inspect_packets()` đúng một lần.
+
+`RTSPCamera` serializes native `capture.read()` and `release()`. If `close()`
+arrives while a native read is active, release is deferred to a daemon cleanup
+thread until that read returns; this avoids the FFmpeg demuxer assertion caused
+by concurrent read/release. A backend that never returns from native read can
+still leave the daemon cleanup thread alive after the controller's bounded join.
 
 ### 3.4 Video flow
 

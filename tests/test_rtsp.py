@@ -193,3 +193,21 @@ def test_close_during_read_defers_release_until_native_read_returns():
     assert fake_cv2.capture.release_completed.wait(0.5)
     assert fake_cv2.capture.released_during_read is False
     assert fake_cv2.capture.released is True
+
+
+def test_wait_closed_confirms_deferred_release_finished():
+    camera = RTSPCamera("rtsp://test", reconnect_delay_s=0)
+    fake_cv2 = BlockingReadOpenCV2()
+    camera._cv2 = fake_cv2
+    thread = threading.Thread(target=camera.read)
+    thread.start()
+
+    assert fake_cv2.capture.read_started.wait(0.2)
+    camera.close()
+
+    assert camera.wait_closed(timeout_s=0.01) is False
+    fake_cv2.capture.resume.set()
+    thread.join(0.5)
+
+    assert camera.wait_closed(timeout_s=0.5) is True
+    assert fake_cv2.capture.release_completed.is_set()

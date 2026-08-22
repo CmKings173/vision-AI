@@ -243,8 +243,10 @@ thresholds must still be measured on the target system.
 RTSP reads run on an independent daemon and the controller has a bounded wait.
 The manual direct-camera entrypoint uses the same daemon and bounded
 `FrameBuffer`; it does not add MediaMTX. OpenCV/FFmpeg native-read cancellation
-after `release()` is backend-specific
-and must still be verified on GX10 under packet loss and camera disconnects.
+after `release()` is backend-specific, so the manual entrypoint waits for
+`RTSPCamera.wait_closed()` before process exit and warns if the configured
+timeout is exceeded. This must still be verified on GX10 under packet loss and
+camera disconnects.
 Smoke exit codes are deterministic: `0` completed (including REVIEW/FAIL
 business decisions), `1` capture/pipeline runtime failure, and `2` invalid or
 unsupported local runtime/configuration.

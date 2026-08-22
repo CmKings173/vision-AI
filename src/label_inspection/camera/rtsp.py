@@ -61,6 +61,8 @@ class RTSPCamera:
         self._lock = threading.Lock()
         self._read_lock = threading.Lock()
         self._deferred_disconnect_started = False
+        self._close_complete = threading.Event()
+        self._close_complete.set()
         self._open_attempts = 0
         self._frames_received = 0
         self._last_frame_timestamp: Optional[float] = None
@@ -221,10 +223,13 @@ class RTSPCamera:
             self._release_capture(capture)
 
     def _deferred_disconnect(self) -> None:
-        with self._read_lock:
-            self._disconnect_now()
-        with self._lock:
-            self._deferred_disconnect_started = False
+        try:
+            with self._read_lock:
+                self._disconnect_now()
+        finally:
+            with self._lock:
+                self._deferred_disconnect_started = False
+            self._close_complete.set()
 
     def _disconnect(self) -> None:
         if self._read_lock.acquire(blocking=False):
@@ -232,11 +237,16 @@ class RTSPCamera:
                 self._disconnect_now()
             finally:
                 self._read_lock.release()
+            with self._lock:
+                deferred_disconnect_started = self._deferred_disconnect_started
+            if not deferred_disconnect_started:
+                self._close_complete.set()
             return
         with self._lock:
             if self._deferred_disconnect_started:
                 return
             self._deferred_disconnect_started = True
+            self._close_complete.clear()
         threading.Thread(
             target=self._deferred_disconnect,
             name="vision-camera-deferred-close",
@@ -301,3 +311,19 @@ class RTSPCamera:
         with self._lock:
             self._closed = True
         self._disconnect()
+
+    def wait_closed(self, *, timeout_s: float = 0.0) -> bool:
+        """Wait until any deferred native capture release has completed.
+
+        ``close`` stays bounded so it can be called while an OpenCV read is
+        blocked.  Callers that are about to terminate a process should use
+        this method after stopping the acquisition worker, otherwise a
+        daemon cleanup thread may still be inside FFmpeg teardown.
+        """
+
+        if timeout_s < 0:
+            raise ValueError("timeout_s must be >= 0")
+        with self._lock:
+            if not self._closed:
+                return False
+        return self._close_complete.wait(timeout_s)

@@ -130,6 +130,7 @@ inspect_rtsp.py / camera_smoke.py
        -> append FramePacket vào FrameBuffer(deque(maxlen=N))
   -> caller chờ hard deadline, không tự gọi blocking camera I/O
   -> stop(): set event, camera.close() requests shutdown without releasing during read, bounded join
+             manual POC then wait_closed() before process exit
   -> snapshot stale-safe
   -> InspectionPipeline.inspect_packets
 ```
@@ -150,8 +151,10 @@ làm manual trigger để snapshot các frame còn fresh trong ring buffer và g
 `RTSPCamera` serializes native `capture.read()` and `release()`. If `close()`
 arrives while a native read is active, release is deferred to a daemon cleanup
 thread until that read returns; this avoids the FFmpeg demuxer assertion caused
-by concurrent read/release. A backend that never returns from native read can
-still leave the daemon cleanup thread alive after the controller's bounded join.
+by concurrent read/release. `wait_closed(timeout_s=...)` exposes completion of
+that deferred release; the persistent manual POC waits for it before Python
+process exit. A backend that never returns from native read can still exceed
+the bounded shutdown timeout and must be reported as a deployment issue.
 
 ### 3.4 Video flow
 

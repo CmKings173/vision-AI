@@ -398,7 +398,16 @@ def main() -> int:
     except (EOFError, KeyboardInterrupt):
         print("Manual trigger loop cancelled.", file=sys.stderr)
     finally:
-        acquisition.stop()
+        # OpenCV's FFmpeg backend may finish a native read after close() has
+        # returned.  Wait long enough for that deferred release before Python
+        # exits, otherwise the daemon cleanup thread can abort the process.
+        shutdown_timeout_s = max(2.0, config.rtsp_read_timeout_ms / 1000.0 + 0.5)
+        acquisition.stop(join_timeout_s=shutdown_timeout_s)
+        if not camera.wait_closed(timeout_s=shutdown_timeout_s):
+            print(
+                "WARNING: RTSP native capture release did not finish before shutdown timeout",
+                file=sys.stderr,
+            )
 
     summary = {
         "status": "COMPLETED" if completed == args.triggers else "INCOMPLETE",

@@ -8,6 +8,7 @@ import os
 import platform
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 
@@ -70,19 +71,38 @@ def collect_runtime_checks(
         "OpenCV", "cv2", distribution="opencv-python-headless", importer=loader
     )
     numpy_check, _ = _import_module("NumPy", "numpy", importer=loader)
-    paddle_check, paddle = _import_module(
-        "Paddle import", "paddle", distribution="paddlepaddle", importer=loader
-    )
-    paddleocr_check, _ = _import_module(
-        "PaddleOCR import", "paddleocr", importer=loader
-    )
     zxing_check, _ = _import_module(
         "ZXing-C++ import", "zxingcpp", distribution="zxing-cpp", importer=loader
     )
-    checks.extend(
-        [opencv_check, numpy_check, paddle_check, paddleocr_check, zxing_check]
-    )
-    checks.extend(_paddle_device_checks(paddle, env.get("VISION_OCR_DEVICE", "cpu")))
+    checks.extend([opencv_check, numpy_check, zxing_check])
+
+    ocr_engine = env.get("VISION_OCR_ENGINE", "ppocr").strip().lower().replace("_", "-")
+    if ocr_engine == "ppocr":
+        paddle_check, paddle = _import_module(
+            "Paddle import", "paddle", distribution="paddlepaddle", importer=loader
+        )
+        paddleocr_check, _ = _import_module(
+            "PaddleOCR import", "paddleocr", importer=loader
+        )
+        checks.extend([paddle_check, paddleocr_check])
+        checks.extend(_paddle_device_checks(paddle, env.get("VISION_OCR_DEVICE", "cpu")))
+    elif ocr_engine in {"tensorrt", "tensor-rt"}:
+        checks.extend(_tensorrt_checks(loader, env))
+        checks.extend(
+            [
+                RuntimeCheck("Paddle import", "not selected by OCR engine", "INFO"),
+                RuntimeCheck("PaddleOCR import", "not selected by OCR engine", "INFO"),
+                RuntimeCheck("Paddle device", "not selected", "INFO"),
+            ]
+        )
+    else:
+        checks.extend(
+            [
+                RuntimeCheck("Paddle import", "unsupported OCR engine", "FAIL"),
+                RuntimeCheck("PaddleOCR import", "unsupported OCR engine", "FAIL"),
+                RuntimeCheck("Paddle device", "unsupported OCR engine", "FAIL"),
+            ]
+        )
 
     detector = env.get("VISION_DETECTOR", "FixedROI").strip().lower().replace("_", "-")
     torch_selected = detector in {"ultralytics", "yolo"}
@@ -110,6 +130,48 @@ def collect_runtime_checks(
             "INFO",
         )
     )
+    return checks
+
+
+def _tensorrt_checks(
+    importer: Importer,
+    environ: Mapping[str, str],
+) -> list[RuntimeCheck]:
+    checks: list[RuntimeCheck] = []
+    tensorrt_check, tensorrt = _import_module(
+        "TensorRT import", "tensorrt", importer=importer
+    )
+    cuda_check, _ = _import_module("CUDA Python import", "cuda", importer=importer)
+    checks.extend([tensorrt_check, cuda_check])
+    if tensorrt is None:
+        checks.append(RuntimeCheck("TensorRT builder", "unavailable: import failed", "FAIL"))
+    else:
+        try:
+            logger = tensorrt.Logger(tensorrt.Logger.WARNING)
+            builder = tensorrt.Builder(logger)
+            checks.append(
+                RuntimeCheck(
+                    "TensorRT builder",
+                    "ready" if builder is not None else "unavailable",
+                    "PASS" if builder is not None else "FAIL",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                RuntimeCheck("TensorRT builder", _import_error(exc), "FAIL")
+            )
+    for name, variable in (
+        ("TensorRT det engine", "VISION_OCR_DET_ENGINE"),
+        ("TensorRT rec engine", "VISION_OCR_REC_ENGINE"),
+        ("TensorRT char dict", "VISION_OCR_CHAR_DICT"),
+    ):
+        path = environ.get(variable, "").strip()
+        if not path:
+            checks.append(RuntimeCheck(name, f"not configured ({variable})", "FAIL"))
+        else:
+            checks.append(
+                RuntimeCheck(name, path, "PASS" if Path(path).is_file() else "FAIL")
+            )
     return checks
 
 

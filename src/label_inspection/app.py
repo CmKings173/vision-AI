@@ -12,6 +12,7 @@ from .detection.fixed_roi import FixedROIDetector
 from .detection.ultralytics_detector import UltralyticsLabelDetector
 from .extraction.fields import FieldExtractor
 from .ocr.ppocr import PPOCRAdapter
+from .ocr.tensorrt_ocr import TensorRTOCRAdapter
 from .pipeline.inspection import InspectionPipeline
 from .pipeline.ranking import CandidateScorer, CandidateScoreWeights
 from .preprocessing.quality import QualityChecker
@@ -68,6 +69,22 @@ def build_pipeline(config: Settings = settings) -> InspectionPipeline:
         sharpness_reference=config.candidate_sharpness_reference,
         max_frame_age_ms=config.max_frame_age_ms,
     )
+    ocr_name = config.ocr_engine.strip().lower().replace("_", "-")
+    if ocr_name in {"tensorrt", "tensor-rt"}:
+        ocr = TensorRTOCRAdapter(
+            det_engine=config.ocr_det_engine or "",
+            rec_engine=config.ocr_rec_engine or "",
+            cls_engine=config.ocr_cls_engine,
+            char_dict=config.ocr_char_dict or "",
+            det_input_size=(config.ocr_det_input_height, config.ocr_det_input_width),
+            rec_input_size=(config.ocr_rec_image_height, config.ocr_rec_image_width),
+            det_threshold=config.ocr_det_threshold,
+            det_box_threshold=config.ocr_det_box_threshold,
+            det_min_box_size=config.ocr_det_min_box_size,
+        )
+    else:
+        ocr = PPOCRAdapter(lang=config.ocr_lang, device=config.ocr_device)
+
     logging.getLogger(__name__).info(
         "Detector engine=%s device=%s; OCR engine=%s device=%s; Barcode engine=%s",
         detector_name,
@@ -78,7 +95,7 @@ def build_pipeline(config: Settings = settings) -> InspectionPipeline:
     )
     return InspectionPipeline(
         detector=detector,
-        ocr=PPOCRAdapter(lang=config.ocr_lang, device=config.ocr_device),
+        ocr=ocr,
         barcode=ZXingBarcodeDecoder(),
         extractor=extractor,
         validator=validator,

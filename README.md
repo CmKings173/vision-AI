@@ -61,7 +61,7 @@ python3 scripts/camera_smoke.py --timeout-s 10
 Set `VISION_RTSP_URL` in the local environment or `.env`; `--source` is only
 an explicit override. Application-owned logs mask embedded passwords.
 
-For a real OCR run install the optional packages in the target environment:
+For a PaddleOCR run install the optional packages in the target environment:
 
 ```bash
 pip install -e '.[ocr,barcode]'
@@ -69,6 +69,49 @@ pip install -e '.[ocr,barcode]'
 
 The OCR group also needs a PaddlePaddle CPU/GPU build compatible with the
 target OS and CUDA runtime.
+
+## GX10 native TensorRT OCR
+
+The V2 source also contains a native TensorRT PP-OCR adapter. It does not
+import PaddlePaddle and keeps the TensorRT detection, recognition, and
+optional angle-classification engines resident in one process. The engines
+must be built on the target GPU; a TensorRT engine built on Mac or x86 should
+not be copied to GX10.
+
+Install the target runtime inside the GX10 virtual environment:
+
+```bash
+python -m pip install -e '.[ocr-tensorrt]'
+python scripts/check_runtime.py
+```
+
+Prepare PP-OCR ONNX models and build target-specific engines on GX10:
+
+```bash
+python scripts/build_tensorrt_engine.py \
+  --onnx models/ppocr/det.onnx \
+  --engine models/ppocr/det.engine \
+  --shape 1,3,960,960 --fp16
+
+python scripts/build_tensorrt_engine.py \
+  --onnx models/ppocr/rec.onnx \
+  --engine models/ppocr/rec.engine \
+  --shape 1,3,48,320 --fp16
+```
+
+Set the OCR backend and model paths:
+
+```bash
+export VISION_OCR_ENGINE=tensorrt
+export VISION_OCR_DEVICE=cuda:0
+export VISION_OCR_DET_ENGINE=models/ppocr/det.engine
+export VISION_OCR_REC_ENGINE=models/ppocr/rec.engine
+export VISION_OCR_CHAR_DICT=models/ppocr/ppocr_keys_v1.txt
+```
+
+The adapter currently expects the standard split PP-OCR DB detection and CTC
+recognition outputs. It keeps raw OCR lines in the existing result schema;
+FieldExtractor, ZXing, validation, and timing remain unchanged.
 
 Detector and transport dependencies are independent and are not needed for
 the FixedROI + PP-OCR + ZXing vertical slice. Install `.[detector]` only for

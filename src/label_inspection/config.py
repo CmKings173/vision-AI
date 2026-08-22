@@ -70,6 +70,39 @@ class Settings:
     ocr_device: str = field(default_factory=lambda: os.getenv("VISION_OCR_DEVICE", "cpu"))
     ocr_engine: str = field(default_factory=lambda: os.getenv("VISION_OCR_ENGINE", "ppocr"))
     ocr_lang: str = field(default_factory=lambda: os.getenv("VISION_OCR_LANG", "en"))
+    ocr_det_engine: Optional[str] = field(
+        default_factory=lambda: _optional_text("VISION_OCR_DET_ENGINE")
+    )
+    ocr_rec_engine: Optional[str] = field(
+        default_factory=lambda: _optional_text("VISION_OCR_REC_ENGINE")
+    )
+    ocr_cls_engine: Optional[str] = field(
+        default_factory=lambda: _optional_text("VISION_OCR_CLS_ENGINE")
+    )
+    ocr_char_dict: Optional[str] = field(
+        default_factory=lambda: _optional_text("VISION_OCR_CHAR_DICT")
+    )
+    ocr_det_input_height: int = field(
+        default_factory=lambda: int(os.getenv("VISION_OCR_DET_INPUT_HEIGHT", "960"))
+    )
+    ocr_det_input_width: int = field(
+        default_factory=lambda: int(os.getenv("VISION_OCR_DET_INPUT_WIDTH", "960"))
+    )
+    ocr_rec_image_height: int = field(
+        default_factory=lambda: int(os.getenv("VISION_OCR_REC_IMAGE_HEIGHT", "48"))
+    )
+    ocr_rec_image_width: int = field(
+        default_factory=lambda: int(os.getenv("VISION_OCR_REC_IMAGE_WIDTH", "320"))
+    )
+    ocr_det_threshold: float = field(
+        default_factory=lambda: float(os.getenv("VISION_OCR_DET_THRESHOLD", "0.30"))
+    )
+    ocr_det_box_threshold: float = field(
+        default_factory=lambda: float(os.getenv("VISION_OCR_DET_BOX_THRESHOLD", "0.60"))
+    )
+    ocr_det_min_box_size: int = field(
+        default_factory=lambda: int(os.getenv("VISION_OCR_DET_MIN_BOX_SIZE", "3"))
+    )
     ocr_confidence: float = field(
         default_factory=lambda: float(os.getenv("VISION_OCR_CONFIDENCE", "0.70"))
     )
@@ -152,8 +185,33 @@ class Settings:
             from .detection.fixed_roi import FixedROIDetector
 
             FixedROIDetector.parse_roi(self.label_roi)
-        if self.ocr_engine.strip().lower() != "ppocr":
-            raise ValueError("VISION_OCR_ENGINE must be 'ppocr' for V1")
+        ocr_engine = self.ocr_engine.strip().lower().replace("_", "-")
+        if ocr_engine not in {"ppocr", "tensorrt", "tensor-rt"}:
+            raise ValueError("VISION_OCR_ENGINE must be 'ppocr' or 'tensorrt'")
+        if ocr_engine in {"tensorrt", "tensor-rt"}:
+            missing = [
+                name
+                for name, value in (
+                    ("VISION_OCR_DET_ENGINE", self.ocr_det_engine),
+                    ("VISION_OCR_REC_ENGINE", self.ocr_rec_engine),
+                    ("VISION_OCR_CHAR_DICT", self.ocr_char_dict),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    "TensorRT OCR requires " + ", ".join(missing)
+                )
+            if self.ocr_det_input_height < 1 or self.ocr_det_input_width < 1:
+                raise ValueError("TensorRT OCR detection input dimensions must be >= 1")
+            if self.ocr_rec_image_height < 1 or self.ocr_rec_image_width < 1:
+                raise ValueError("TensorRT OCR recognition input dimensions must be >= 1")
+            if not 0 <= self.ocr_det_threshold <= 1:
+                raise ValueError("VISION_OCR_DET_THRESHOLD must be between 0 and 1")
+            if not 0 <= self.ocr_det_box_threshold <= 1:
+                raise ValueError("VISION_OCR_DET_BOX_THRESHOLD must be between 0 and 1")
+            if self.ocr_det_min_box_size < 1:
+                raise ValueError("VISION_OCR_DET_MIN_BOX_SIZE must be >= 1")
         if self.barcode_engine.strip().lower() != "zxing":
             raise ValueError("VISION_BARCODE_ENGINE must be 'zxing' for V1")
         ratios = (

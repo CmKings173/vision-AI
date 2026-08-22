@@ -97,6 +97,50 @@ def test_paddle_import_failure_marks_runtime_not_ready():
     assert "ImportError" in checks["Paddle import"].value
 
 
+def test_tensorrt_runtime_checks_do_not_require_paddle(tmp_path):
+    class FakeLogger:
+        WARNING = 1
+
+        def __init__(self, severity):
+            self.severity = severity
+
+    class FakeTensorRT:
+        Logger = FakeLogger
+        Builder = lambda logger: object()
+
+    modules = {
+        "cv2": types.SimpleNamespace(__version__="4.fake"),
+        "numpy": types.SimpleNamespace(__version__="2.fake"),
+        "zxingcpp": types.SimpleNamespace(__version__="2.fake"),
+        "tensorrt": FakeTensorRT,
+        "cuda": types.SimpleNamespace(),
+    }
+    det = tmp_path / "det.engine"
+    rec = tmp_path / "rec.engine"
+    keys = tmp_path / "keys.txt"
+    det.write_bytes(b"engine")
+    rec.write_bytes(b"engine")
+    keys.write_text("A\nB\n", encoding="utf-8")
+
+    checks = {
+        check.name: check
+        for check in collect_runtime_checks(
+            importer=modules.__getitem__,
+            environ={
+                "VISION_OCR_ENGINE": "tensorrt",
+                "VISION_OCR_DET_ENGINE": str(det),
+                "VISION_OCR_REC_ENGINE": str(rec),
+                "VISION_OCR_CHAR_DICT": str(keys),
+            },
+        )
+    }
+
+    assert checks["TensorRT import"].status == "PASS"
+    assert checks["TensorRT builder"].status == "PASS"
+    assert checks["Paddle import"].status == "INFO"
+    assert checks["TensorRT det engine"].status == "PASS"
+
+
 @pytest.mark.runtime
 @pytest.mark.requires_paddle
 @pytest.mark.skipif(

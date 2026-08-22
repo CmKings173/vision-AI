@@ -24,6 +24,13 @@
 - [x] T11: Implement SKU/LOT FieldExtractor.
 - [x] T12: Implement deterministic validation and result statuses.
 
+## Phase 3A — GX10 native TensorRT backend
+
+- [x] G1: Add resident TensorRT engine runner using TensorRT + cuda-python.
+- [x] G2: Add PP-OCR DB/CTC preprocessing and postprocessing adapter.
+- [x] G3: Add TensorRT engine build script, config wiring, runtime checks, and contract tests.
+- [ ] G4: Convert PP-OCR ONNX models and build/test target-specific engines on GX10.
+
 ## Phase 4 — Fallback
 
 - [ ] T13: Implement alternate preprocessing and multi-frame retry.
@@ -71,6 +78,7 @@
 ## Current status
 
 - T1–T12 plus V1 hardening are code-complete and locally unit/integration-tested.
+- G1–G3 are code-complete; G4 remains target-runtime work because the repository does not contain PP-OCR ONNX/engine model artifacts.
 - Runtime verification remains blocked by the current host environment and is reported as SKIP/FAIL, not PASS.
 - Latest local verification: 60 unit + 11 integration passed; 3 external runtime tests skipped.
 - Latest 8x4K selector benchmark (480 px preview): 762.925 ms → 31.430 ms median (24.27x).

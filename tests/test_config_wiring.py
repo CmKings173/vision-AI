@@ -5,6 +5,7 @@ import pytest
 from label_inspection.app import build_pipeline
 from label_inspection.camera.security import resolve_camera_source
 from label_inspection.config import Settings
+from label_inspection.ocr.tensorrt_ocr import TensorRTOCRAdapter
 
 
 def valid_settings(**overrides):
@@ -43,6 +44,26 @@ def test_separate_ocr_device_and_confidence_are_wired():
 
     assert pipeline.ocr.device == "gpu:0"
     assert pipeline.validator.min_field_confidence == 0.83
+
+
+def test_tensorrt_ocr_engine_is_wired_without_loading_gpu_runtime():
+    pipeline = build_pipeline(
+        valid_settings(
+            ocr_engine="tensorrt",
+            ocr_device="cuda:0",
+            ocr_det_engine="models/ppocr/det.engine",
+            ocr_rec_engine="models/ppocr/rec.engine",
+            ocr_char_dict="models/ppocr/ppocr_keys_v1.txt",
+        )
+    )
+
+    assert isinstance(pipeline.ocr, TensorRTOCRAdapter)
+    assert pipeline.ocr.engine == "tensorrt-ppocr"
+
+
+def test_tensorrt_ocr_requires_engine_and_dictionary_paths():
+    with pytest.raises(ValueError, match="VISION_OCR_DET_ENGINE"):
+        valid_settings(ocr_engine="tensorrt").validate()
 
 
 def test_malformed_roi_is_rejected_when_pipeline_is_built():

@@ -36,11 +36,13 @@ class FieldExtractor:
         fields: Iterable[str] = ("sku", "lot"),
         *,
         patterns: Mapping[str, re.Pattern[str]] | None = None,
+        allow_adjacent_line_values: bool = False,
     ) -> None:
         self.fields = tuple(field.lower() for field in fields)
         self.patterns = dict(DEFAULT_PATTERNS)
         if patterns:
             self.patterns.update({key.lower(): value for key, value in patterns.items()})
+        self.allow_adjacent_line_values = allow_adjacent_line_values
 
     def extract(
         self,
@@ -57,8 +59,21 @@ class FieldExtractor:
             if pattern is None:
                 continue
             matches: list[ExtractedField] = []
-            for line in line_list:
-                match = pattern.search(line.text)
+            candidates = [
+                (line.text, float(line.confidence), line.text)
+                for line in line_list
+            ]
+            if self.allow_adjacent_line_values:
+                candidates.extend(
+                    (
+                        f"{line.text} {next_line.text}",
+                        min(float(line.confidence), float(next_line.confidence)),
+                        f"{line.text} {next_line.text}",
+                    )
+                    for line, next_line in zip(line_list, line_list[1:])
+                )
+            for text, confidence, line_text in candidates:
+                match = pattern.search(text)
                 if not match:
                     continue
                 value = match.group(1).strip(" .,:;|[]()")
@@ -67,9 +82,9 @@ class FieldExtractor:
                 matches.append(
                     ExtractedField(
                         value=value,
-                        confidence=max(0.0, min(1.0, float(line.confidence))),
+                        confidence=max(0.0, min(1.0, confidence)),
                         source=source,
-                        line_text=line.text,
+                        line_text=line_text,
                     )
                 )
             if matches:

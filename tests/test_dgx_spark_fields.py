@@ -41,3 +41,31 @@ def test_dgx_spark_profile_does_not_invent_missing_fields():
 
     assert all(item.value is None for item in extracted.values())
     assert all(item.reason == "NOT_FOUND" for item in extracted.values())
+
+
+def test_dgx_spark_profile_maps_split_label_value_lines_and_label_aliases():
+    lines = [
+        OCRLine("Nvidia P/N:940-54242-0006-000", 0.99),
+        OCRLine("S/O NO.: SOA-250900131-1", 0.99),
+        OCRLine("Carton ID : 198MA5020450", 0.96),
+        OCRLine("Q'TY:", 0.99),
+        OCRLine("2", 0.99),
+        OCRLine("N.W.:", 0.99),
+        OCRLine("5.240", 0.99),
+        OCRLine("G.W.:", 0.99),
+        OCRLine("7.240", 0.99),
+        OCRLine("C/NO.:", 0.99),
+        OCRLine("B0027", 0.99),
+    ]
+
+    extracted = build_extractor("dgx_spark_label").extract(
+        lines,
+        source="ppocr_v6",
+    )
+
+    assert extracted["customer_part_number"].value == "940-54242-0006-000"
+    # The label has both a Carton ID and a C/NO.; carton_number maps to C/NO.
+    assert extracted["carton_number"].value == "B0027"
+    assert extracted["quantity"].value == "2"
+    assert extracted["net_weight"].value == "5.240"
+    assert extracted["gross_weight"].value == "7.240"

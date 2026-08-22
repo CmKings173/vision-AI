@@ -20,7 +20,8 @@ DGX_SPARK_LABEL_FIELDS = (
 
 DGX_SPARK_LABEL_PATTERNS = {
     "customer_part_number": re.compile(
-        r"\b(?:CUSTOMER\s+PART(?:\s+NUMBER|\s+NO\.?)?|CUSTOMER\s+P/N|CPN)"
+        r"\b(?:CUSTOMER\s+PART(?:\s+NUMBER|\s+NO\.?)?|CUSTOMER\s+P/N|"
+        r"NVIDIA\s+P/N|CPN)"
         r"\s*[:#=\-]?\s*([A-Z0-9][A-Z0-9._/\-]{2,})",
         re.IGNORECASE,
     ),
@@ -35,7 +36,7 @@ DGX_SPARK_LABEL_PATTERNS = {
         re.IGNORECASE,
     ),
     "quantity": re.compile(
-        r"\b(?:QTY|QUANTITY)\s*[:#=\-]?\s*([0-9]+(?:[.,][0-9]+)?)",
+        r"\b(?:Q['’]?TY|QUANTITY)\s*[:#=\-]?\s*([0-9]+(?:[.,][0-9]+)?)",
         re.IGNORECASE,
     ),
     "net_weight": re.compile(
@@ -49,7 +50,8 @@ DGX_SPARK_LABEL_PATTERNS = {
         re.IGNORECASE,
     ),
     "carton_number": re.compile(
-        r"\b(?:CARTON\s*(?:NO\.?|NUMBER|#)|CTN\s*(?:NO\.?|#))"
+        r"\b(?:CARTON\s*(?:NO\.?|NUMBER|#)|CTN\s*(?:NO\.?|#)|"
+        r"C\s*/\s*NO\.?)"
         r"\s*[:#=\-]?\s*([A-Z0-9][A-Z0-9._/\-]{0,})",
         re.IGNORECASE,
     ),
@@ -64,6 +66,7 @@ def build_extractor(profile: str = "default") -> FieldExtractor:
         return FieldExtractor(
             fields=DGX_SPARK_LABEL_FIELDS,
             patterns=DGX_SPARK_LABEL_PATTERNS,
+            allow_adjacent_line_values=True,
         )
     if normalized == "default":
         return FieldExtractor()

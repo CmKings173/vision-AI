@@ -6,6 +6,7 @@ from label_inspection.app import build_pipeline
 from label_inspection.camera.security import resolve_camera_source
 from label_inspection.config import Settings
 from label_inspection.ocr.tensorrt_ocr import TensorRTOCRAdapter
+from label_inspection.ocr.ppocr_v6 import PPOCRV6TransformersAdapter
 
 
 def valid_settings(**overrides):
@@ -59,6 +60,28 @@ def test_tensorrt_ocr_engine_is_wired_without_loading_gpu_runtime():
 
     assert isinstance(pipeline.ocr, TensorRTOCRAdapter)
     assert pipeline.ocr.engine == "tensorrt-ppocr"
+
+
+def test_ppocr_v6_transformers_engine_is_wired_without_loading_runtime():
+    pipeline = build_pipeline(
+        valid_settings(
+            ocr_engine="ppocr_v6",
+            ocr_backend="transformers",
+            ocr_version="PP-OCRv6",
+            ocr_device="gpu:0",
+            required_fields=("tracking_number", "order_id"),
+        )
+    )
+
+    assert isinstance(pipeline.ocr, PPOCRV6TransformersAdapter)
+    assert pipeline.ocr.engine == "ppocr_v6"
+    assert pipeline.ocr.backend == "transformers"
+    assert set(pipeline.extractor.fields) == {
+        "sku",
+        "lot",
+        "tracking_number",
+        "order_id",
+    }
 
 
 def test_tensorrt_ocr_requires_engine_and_dictionary_paths():

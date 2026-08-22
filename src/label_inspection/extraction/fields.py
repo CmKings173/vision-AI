@@ -17,6 +17,14 @@ DEFAULT_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:LOT\s*NO|BATCH|LOT)\s*[:#=\-]?\s*([A-Z0-9][A-Z0-9._/\-]{1,})",
         re.IGNORECASE,
     ),
+    "tracking_number": re.compile(
+        r"\b(SPX[A-Z0-9]{8,})\b",
+        re.IGNORECASE,
+    ),
+    "order_id": re.compile(
+        r"\b([0-9]{6,}[A-Z0-9]{4,})\b",
+        re.IGNORECASE,
+    ),
 }
 
 

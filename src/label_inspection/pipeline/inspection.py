@@ -230,9 +230,11 @@ class InspectionPipeline:
                     error_message="OCR inference failed.",
                 )
 
+        decoded_barcodes: list[BarcodeResult] = []
         with timed(timing, "barcode_ms"):
             try:
-                barcode_result = _choose_barcode(self.barcode.decode(best.image))
+                decoded_barcodes = self.barcode.decode(best.image)
+                barcode_result = _choose_barcode(decoded_barcodes)
             except Exception:
                 barcode_result = BarcodeResult(
                     value=None,
@@ -241,6 +243,7 @@ class InspectionPipeline:
                     error_code="BARCODE_RUNTIME_ERROR",
                     error_message="Barcode decoding failed.",
                 )
+                decoded_barcodes = [barcode_result]
 
         with timed(timing, "field_extraction_ms"):
             extracted = self.extractor.extract(raw_ocr.lines, source=raw_ocr.engine)
@@ -265,6 +268,7 @@ class InspectionPipeline:
             raw_ocr=raw_ocr,
             extracted=extracted,
             barcode=barcode_result,
+            barcodes=decoded_barcodes,
             quality=best.quality,
             validation=validation,
             timing=timing,

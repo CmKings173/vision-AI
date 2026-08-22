@@ -69,6 +69,12 @@ class Settings:
     )
     ocr_device: str = field(default_factory=lambda: os.getenv("VISION_OCR_DEVICE", "cpu"))
     ocr_engine: str = field(default_factory=lambda: os.getenv("VISION_OCR_ENGINE", "ppocr"))
+    ocr_backend: str = field(
+        default_factory=lambda: os.getenv("VISION_OCR_BACKEND", "transformers")
+    )
+    ocr_version: str = field(
+        default_factory=lambda: os.getenv("VISION_OCR_VERSION", "PP-OCRv6")
+    )
     ocr_lang: str = field(default_factory=lambda: os.getenv("VISION_OCR_LANG", "en"))
     ocr_det_engine: Optional[str] = field(
         default_factory=lambda: _optional_text("VISION_OCR_DET_ENGINE")
@@ -186,8 +192,15 @@ class Settings:
 
             FixedROIDetector.parse_roi(self.label_roi)
         ocr_engine = self.ocr_engine.strip().lower().replace("_", "-")
-        if ocr_engine not in {"ppocr", "tensorrt", "tensor-rt"}:
-            raise ValueError("VISION_OCR_ENGINE must be 'ppocr' or 'tensorrt'")
+        if ocr_engine not in {"ppocr", "ppocr-v6", "tensorrt", "tensor-rt"}:
+            raise ValueError(
+                "VISION_OCR_ENGINE must be 'ppocr', 'ppocr_v6', or 'tensorrt'"
+            )
+        if ocr_engine == "ppocr-v6":
+            if self.ocr_backend.strip().lower() != "transformers":
+                raise ValueError("PP-OCRv6 requires VISION_OCR_BACKEND=transformers")
+            if self.ocr_version.strip().lower() != "pp-ocrv6":
+                raise ValueError("PP-OCRv6 requires VISION_OCR_VERSION=PP-OCRv6")
         if ocr_engine in {"tensorrt", "tensor-rt"}:
             missing = [
                 name

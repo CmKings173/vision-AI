@@ -12,6 +12,7 @@ from .detection.fixed_roi import FixedROIDetector
 from .detection.ultralytics_detector import UltralyticsLabelDetector
 from .extraction.fields import FieldExtractor
 from .ocr.ppocr import PPOCRAdapter
+from .ocr.ppocr_v6 import PPOCRV6TransformersAdapter
 from .ocr.tensorrt_ocr import TensorRTOCRAdapter
 from .pipeline.inspection import InspectionPipeline
 from .pipeline.ranking import CandidateScorer, CandidateScoreWeights
@@ -40,7 +41,8 @@ def build_pipeline(config: Settings = settings) -> InspectionPipeline:
 
     # Keep SKU and LOT in the JSON even when only SKU is a PASS requirement;
     # this preserves evidence for later business-rule changes.
-    extractor = FieldExtractor(fields=("sku", "lot"))
+    extractor_fields = tuple(dict.fromkeys(("sku", "lot", *config.required_fields)))
+    extractor = FieldExtractor(fields=extractor_fields)
     validator = LabelValidator(
         required_fields=config.required_fields,
         barcode_required=config.barcode_required,
@@ -70,7 +72,12 @@ def build_pipeline(config: Settings = settings) -> InspectionPipeline:
         max_frame_age_ms=config.max_frame_age_ms,
     )
     ocr_name = config.ocr_engine.strip().lower().replace("_", "-")
-    if ocr_name in {"tensorrt", "tensor-rt"}:
+    if ocr_name == "ppocr-v6":
+        ocr = PPOCRV6TransformersAdapter(
+            device=config.ocr_device,
+            ocr_version=config.ocr_version,
+        )
+    elif ocr_name in {"tensorrt", "tensor-rt"}:
         ocr = TensorRTOCRAdapter(
             det_engine=config.ocr_det_engine or "",
             rec_engine=config.ocr_rec_engine or "",

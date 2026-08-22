@@ -56,8 +56,8 @@ class ZXingBarcodeDecoder:
                 result = _normalize_result(item)
                 if result.value:
                     results.append(result)
-            if any(result.value for result in results):
-                break
+            # Run every enabled variant so a crop containing both a 1D code
+            # and a QR code keeps both pieces of evidence after deduplication.
         return _unique(results) or [BarcodeResult(value=None)]
 
 

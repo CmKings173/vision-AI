@@ -70,6 +70,62 @@ pip install -e '.[ocr,barcode]'
 The OCR group also needs a PaddlePaddle CPU/GPU build compatible with the
 target OS and CUDA runtime.
 
+## GX10 real PP-OCRv6 Transformers path (preferred)
+
+The GX10 acceptance path uses the already validated PyTorch CUDA runtime,
+PP-OCRv6 through PaddleOCR's `transformers` engine, FixedROI, and real
+ZXing-C++. Do not install a second Torch build over the GX10 image. Install
+the project adapter dependencies in the existing Python 3.11 environment:
+
+```bash
+cd ~/Projects/vision-AI
+source .venv/bin/activate
+python -m pip install -e '.[ocr-transformers,barcode]'
+
+export VISION_OCR_ENGINE=ppocr_v6
+export VISION_OCR_BACKEND=transformers
+export VISION_OCR_VERSION=PP-OCRv6
+export VISION_OCR_DEVICE=gpu:0
+export VISION_BARCODE_ENGINE=zxing
+export VISION_REQUIRED_FIELDS=tracking_number,order_id
+
+python scripts/check_runtime.py
+python scripts/test_zxing_runtime.py \
+  --image /home/minh/Projects/vision-AI/test_data/label_crop.jpg
+python scripts/test_ppocr_v6.py \
+  --image /home/minh/Projects/vision-AI/test_data/label_crop.jpg \
+  --device gpu:0 --runs 20
+```
+
+Run the complete real image path before touching RTSP. The default full-frame
+ROI is still FixedROI; pass the calibrated normalized ROI when `pic.jpg`
+contains background around the label:
+
+```bash
+python scripts/run_real_image_integration.py \
+  --image /home/minh/Projects/vision-AI/test_data/pic.jpg \
+  --roi 0,0,1,1 \
+  --device gpu:0 \
+  --required-fields tracking_number,order_id \
+  --warmup 2 --runs 20
+```
+
+Only when that command returns image `PASS`, run the real phone RTSP path:
+
+```bash
+export VISION_RTSP_URL='rtsp://user:password@host:port/path'
+python scripts/run_real_rtsp_integration.py \
+  --max-frames 30 --timeout-s 15 \
+  --roi 0,0,1,1 --device gpu:0 \
+  --required-fields tracking_number,order_id
+```
+
+These commands print JSON evidence for OCR lines, extracted fields, barcode
+format/value/validity/position, selected frame/crop score, and timings. The
+20-run benchmark excludes model load/download time. Unit or mock tests do not
+count as GX10 verification. ONNX, Paddle2ONNX, TensorRT, GLM-OCR, Redis,
+GigE, custom YOLO/training, ERP, and scale changes are frozen in this path.
+
 ## GX10 native TensorRT OCR
 
 The V2 source also contains a native TensorRT PP-OCR adapter. It does not

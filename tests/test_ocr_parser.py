@@ -42,6 +42,15 @@ def test_normalize_legacy_paddle_result_shape():
     assert lines[0].confidence == 0.9
 
 
+def test_normalize_paddle_result_accepts_generator_output():
+    def results():
+        yield {"rec_texts": ["ORDER: 123"], "rec_scores": [0.8]}
+
+    lines = normalize_paddle_result(results())
+
+    assert lines[0].text == "ORDER: 123"
+
+
 def test_ppocr_loads_once_and_returns_structured_lines(monkeypatch):
     class FakeOCR:
         instances = 0

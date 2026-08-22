@@ -84,6 +84,9 @@ class RawOCRResult:
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     raw: Optional[dict[str, Any]] = None
+    backend: Optional[str] = None
+    device: Optional[str] = None
+    model: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.state = _stage_state(self.state, self.success)
@@ -92,10 +95,14 @@ class RawOCRResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "engine": self.engine,
+            "backend": self.backend,
+            "device": self.device,
+            "model": self.model,
             "lines": [_json(line) for line in self.lines],
             "elapsed_ms": self.elapsed_ms,
             "success": self.success,
             "state": self.state,
+            "status": self.state,
             "error": self.error,
             "error_code": self.error_code,
             "error_message": self.error_message,
@@ -218,6 +225,7 @@ class InspectionResult:
             value=None, success=False, state=STAGE_NOT_RUN
         )
     )
+    barcodes: list[BarcodeResult] = field(default_factory=list)
     quality: QualityReport = field(
         default_factory=lambda: QualityReport(status="NOT_RUN", state=STAGE_NOT_RUN)
     )
@@ -239,6 +247,7 @@ class InspectionResult:
             "raw_ocr": _json(self.raw_ocr),
             "extracted": {key: _json(value) for key, value in self.extracted.items()},
             "barcode": _json(self.barcode),
+            "barcodes": [_json(item) for item in self.barcodes],
             "quality": _json(self.quality),
             "validation": _json(self.validation),
             "timing": dict(self.timing),

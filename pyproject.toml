@@ -21,6 +21,10 @@ detector = [
 ocr = [
     "paddleocr>=3.0",
 ]
+ocr-transformers = [
+    "paddleocr>=3.0",
+    "transformers>=5.8.0",
+]
 ocr-tensorrt = [
     "tensorrt-cu13>=11.2",
     "cuda-python>=12.0",

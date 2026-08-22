@@ -87,6 +87,8 @@ def normalize_paddle_result(output: Any) -> list[OCRLine]:
         polygons = _get(item, "rec_polys")
         if polygons is None:
             polygons = _get(item, "dt_polys")
+        if polygons is None:
+            polygons = _get(item, "rec_boxes")
         if texts is not None:
             for index, text in enumerate(_as_list(texts)):
                 score_values = _as_list(scores)
@@ -117,6 +119,11 @@ def _as_items(output: Any) -> list[Any]:
             if first and _legacy_line(first[0]):
                 return list(first)
         return list(output)
+    if hasattr(output, "__iter__") and not isinstance(output, (str, bytes)):
+        try:
+            return list(output)
+        except TypeError:
+            return []
     return []
 
 
@@ -142,6 +149,11 @@ def _polygon(value: Any) -> list[list[float]] | None:
     if hasattr(value, "tolist"):
         value = value.tolist()
     try:
+        if len(value) == 4 and all(
+            isinstance(coordinate, (int, float)) for coordinate in value
+        ):
+            x1, y1, x2, y2 = (float(coordinate) for coordinate in value)
+            return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
         return [[float(point[0]), float(point[1])] for point in value]
     except (TypeError, IndexError, ValueError):
         return None

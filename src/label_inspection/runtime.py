@@ -77,6 +77,7 @@ def collect_runtime_checks(
     checks.extend([opencv_check, numpy_check, zxing_check])
 
     ocr_engine = env.get("VISION_OCR_ENGINE", "ppocr").strip().lower().replace("_", "-")
+    detector = env.get("VISION_DETECTOR", "FixedROI").strip().lower().replace("_", "-")
     if ocr_engine == "ppocr":
         paddle_check, paddle = _import_module(
             "Paddle import", "paddle", distribution="paddlepaddle", importer=loader
@@ -86,6 +87,20 @@ def collect_runtime_checks(
         )
         checks.extend([paddle_check, paddleocr_check])
         checks.extend(_paddle_device_checks(paddle, env.get("VISION_OCR_DEVICE", "cpu")))
+    elif ocr_engine == "ppocr-v6":
+        paddleocr_check, _ = _import_module(
+            "PaddleOCR import", "paddleocr", importer=loader
+        )
+        transformers_check, _ = _import_module(
+            "Transformers import", "transformers", distribution="transformers", importer=loader
+        )
+        checks.extend(
+            [
+                RuntimeCheck("Paddle import", "not selected by Transformers backend", "INFO"),
+                paddleocr_check,
+                transformers_check,
+            ]
+        )
     elif ocr_engine in {"tensorrt", "tensor-rt"}:
         checks.extend(_tensorrt_checks(loader, env))
         checks.extend(
@@ -104,16 +119,18 @@ def collect_runtime_checks(
             ]
         )
 
-    detector = env.get("VISION_DETECTOR", "FixedROI").strip().lower().replace("_", "-")
-    torch_selected = detector in {"ultralytics", "yolo"}
+    torch_selected = detector in {"ultralytics", "yolo"} or ocr_engine == "ppocr-v6"
     if torch_selected:
         torch_check, torch = _import_module(
             "Torch import", "torch", distribution="torch", importer=loader
         )
         checks.append(torch_check)
-        checks.extend(
-            _torch_device_checks(torch, env.get("VISION_DETECTOR_DEVICE", "cpu"))
+        requested_device = (
+            env.get("VISION_OCR_DEVICE", "gpu:0")
+            if ocr_engine == "ppocr-v6"
+            else env.get("VISION_DETECTOR_DEVICE", "cpu")
         )
+        checks.extend(_torch_device_checks(torch, requested_device))
     else:
         checks.extend(
             [

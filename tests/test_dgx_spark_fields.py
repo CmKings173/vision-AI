@@ -85,3 +85,15 @@ def test_dgx_spark_profile_preserves_alias_and_declares_semantic_blocker():
         "KNOWN_SEMANTIC_BLOCKER / NEEDS_BUSINESS_CONFIRMATION"
     )
     assert "Nvidia P/N" in extractor.mapping_summary["customer_part_number"]
+
+
+def test_dgx_spark_profile_does_not_capture_customer_part_label_as_value():
+    extracted = build_extractor("dgx_spark_label").extract(
+        [
+            OCRLine("Customer Part Number", 0.99),
+            OCRLine("126X600000A", 0.99),
+        ],
+        source="ppocr_v6",
+    )
+
+    assert extracted["customer_part_number"].value == "126X600000A"

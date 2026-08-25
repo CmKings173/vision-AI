@@ -34,7 +34,7 @@ DGX_SPARK_MAPPING_SUMMARY = {
 
 DGX_SPARK_LABEL_PATTERNS = {
     "customer_part_number": re.compile(
-        r"\b(?:CUSTOMER\s+PART(?:\s+NUMBER|\s+NO\.?)?|CUSTOMER\s+P/N|"
+        r"\b(?:CUSTOMER\s+PART(?:\s+NUMBER|\s+NO\.?)|CUSTOMER\s+P/N|"
         r"NVIDIA\s+P/N|CPN)"
         r"\s*[:#=\-]?\s*([A-Z0-9][A-Z0-9._/\-]{2,})",
         re.IGNORECASE,
@@ -45,7 +45,7 @@ DGX_SPARK_LABEL_PATTERNS = {
         re.IGNORECASE,
     ),
     "our_part_number": re.compile(
-        r"\b(?:OUR\s+PART(?:\s+NUMBER|\s+NO\.?)?|OUR\s+P/N)"
+        r"\b(?:OUR\s+PART(?:\s+NUMBER|\s+NO\.?)|OUR\s+P/N)"
         r"\s*[:#=\-]?\s*([A-Z0-9][A-Z0-9._/\-]{2,})",
         re.IGNORECASE,
     ),

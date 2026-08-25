@@ -485,21 +485,43 @@ stage spans:          absent
 
 ### 11.2 Evaluation
 
-The repository has unit/contract tests and real GX10 runtime acceptance tests
-for the acquisition and inference path. The runtime test proves that the
-system can execute the path; it does not provide a ground-truth accuracy
-evaluation.
+The repository now contains a reusable evaluator at
+`src/label_inspection/evaluation/` and the CLI
+`scripts/evaluate_dataset.py`. It executes the same FixedROI, quality,
+PP-OCRv6, ZXing, FieldExtractor, and LabelValidator path used by the runtime.
+PP-OCRv6 and ZXing are initialized once per evaluation process and reused for
+all samples.
 
-Not yet implemented as a repeatable evaluation suite:
+The evaluator emits field exact-match/missing/wrong/false-extraction metrics,
+strict DataMatrix payload/format/validity metrics, business
+PASS/REVIEW/FAIL/ERROR and required-output-aware false-pass metrics,
+quality/ROI/failure/condition metrics, and latency mean/p50/p95/p99/max.
+Production accuracy is gated to target-role, human-verified, non-synthetic
+records; runtime failures remain in its denominator. With zero eligible ground
+truth the report uses `NOT_VERIFIED`, never a fabricated 0% or 100%.
 
-- OCR character accuracy.
-- Exact-match accuracy per business field.
-- Field precision/recall.
-- Barcode decode success rate by image condition.
-- False PASS and false REVIEW rates.
-- Quality-gate precision.
-- Accuracy by orientation, distance, glare, exposure, and camera FPS.
-- Dataset versioning and regression reports.
+Every run writes to an immutable `<output_root>/<run_id>` directory and records
+Git state, dataset/config fingerprints, ROI, quality thresholds, dependency
+versions, and extractor semantics in `provenance.json`. Real-sample condition
+rows cover lighting, glare, blur, distance, position, rotation, and occlusion;
+the insufficient-sample threshold is evaluator configuration (default 5).
+
+The DGX production extractor currently retains its historical `Nvidia P/N` to
+`customer_part_number` alias. Evaluation marks this as
+`KNOWN_SEMANTIC_BLOCKER / NEEDS_BUSINESS_CONFIRMATION`, preserves the raw OCR
+line, and does not present `customer_part_number` as production-verified until
+the mapping is confirmed.
+
+The current dataset is still not accuracy-verified: the target contains one
+real DGX smoke image with `human_verified=false`. Synthetic DGX variants and
+the generic shipping seed are reported in separate robustness datasets.
+
+Still absent from the evaluation framework or target data:
+
+- OCR character-level accuracy and representative human-verified samples.
+- Production field mapping confirmation for NVIDIA P/N vs Customer Part No.
+- Public dataset downloads requiring network/credentials.
+- Production monitoring, distributed tracing, and alerting.
 
 ### 11.3 Monitoring
 

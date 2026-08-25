@@ -37,12 +37,20 @@ class FieldExtractor:
         *,
         patterns: Mapping[str, re.Pattern[str]] | None = None,
         allow_adjacent_line_values: bool = False,
+        profile_name: str = "default",
+        profile_version: str = "1.0",
+        semantic_blockers: Mapping[str, str] | None = None,
+        mapping_summary: Mapping[str, str] | None = None,
     ) -> None:
         self.fields = tuple(field.lower() for field in fields)
         self.patterns = dict(DEFAULT_PATTERNS)
         if patterns:
             self.patterns.update({key.lower(): value for key, value in patterns.items()})
         self.allow_adjacent_line_values = allow_adjacent_line_values
+        self.profile_name = profile_name
+        self.profile_version = profile_version
+        self.semantic_blockers = dict(semantic_blockers or {})
+        self.mapping_summary = dict(mapping_summary or {})
 
     def extract(
         self,

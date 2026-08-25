@@ -69,3 +69,19 @@ def test_dgx_spark_profile_maps_split_label_value_lines_and_label_aliases():
     assert extracted["quantity"].value == "2"
     assert extracted["net_weight"].value == "5.240"
     assert extracted["gross_weight"].value == "7.240"
+
+
+def test_dgx_spark_profile_preserves_alias_and_declares_semantic_blocker():
+    extractor = build_extractor("dgx_spark_label")
+    extracted = extractor.extract(
+        [OCRLine("Nvidia P/N:940-54242-0006-000", 0.99)],
+        source="ppocr_v6",
+    )
+
+    assert extracted["customer_part_number"].value == "940-54242-0006-000"
+    assert extractor.profile_name == "dgx_spark_label"
+    assert extractor.profile_version
+    assert extractor.semantic_blockers["customer_part_number"].startswith(
+        "KNOWN_SEMANTIC_BLOCKER / NEEDS_BUSINESS_CONFIRMATION"
+    )
+    assert "Nvidia P/N" in extractor.mapping_summary["customer_part_number"]

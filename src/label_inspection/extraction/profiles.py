@@ -17,6 +17,20 @@ DGX_SPARK_LABEL_FIELDS = (
     "carton_number",
 )
 
+DGX_SPARK_PROFILE_VERSION = "1.0"
+DGX_SPARK_SEMANTIC_BLOCKERS = {
+    "customer_part_number": (
+        "KNOWN_SEMANTIC_BLOCKER / NEEDS_BUSINESS_CONFIRMATION: "
+        "current production profile aliases Nvidia P/N to customer_part_number"
+    )
+}
+DGX_SPARK_MAPPING_SUMMARY = {
+    "customer_part_number": (
+        "Current production aliases: Customer Part Number, Customer P/N, "
+        "Nvidia P/N, CPN -> customer_part_number"
+    )
+}
+
 
 DGX_SPARK_LABEL_PATTERNS = {
     "customer_part_number": re.compile(
@@ -67,6 +81,10 @@ def build_extractor(profile: str = "default") -> FieldExtractor:
             fields=DGX_SPARK_LABEL_FIELDS,
             patterns=DGX_SPARK_LABEL_PATTERNS,
             allow_adjacent_line_values=True,
+            profile_name="dgx_spark_label",
+            profile_version=DGX_SPARK_PROFILE_VERSION,
+            semantic_blockers=DGX_SPARK_SEMANTIC_BLOCKERS,
+            mapping_summary=DGX_SPARK_MAPPING_SUMMARY,
         )
     if normalized == "default":
         return FieldExtractor()

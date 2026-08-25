@@ -83,6 +83,7 @@ class InspectionPipeline:
         camera_id: Optional[str] = None,
         frame_id: int = 0,
         captured_at: Optional[float] = None,
+        quality_observation: bool = False,
     ) -> InspectionResult:
         packet = FramePacket(
             frame_id=frame_id,
@@ -91,7 +92,12 @@ class InspectionPipeline:
             source="image",
             captured_monotonic=time.monotonic(),
         )
-        return self.inspect_packets([packet], event_id=event_id, camera_id=camera_id)
+        return self.inspect_packets(
+            [packet],
+            event_id=event_id,
+            camera_id=camera_id,
+            quality_observation=quality_observation,
+        )
 
     def inspect_packets(
         self,
@@ -99,6 +105,7 @@ class InspectionPipeline:
         *,
         event_id: Optional[str] = None,
         camera_id: Optional[str] = None,
+        quality_observation: bool = False,
     ) -> InspectionResult:
         started = time.perf_counter()
         event_id = event_id or f"INS-{uuid.uuid4().hex[:12].upper()}"
@@ -193,6 +200,14 @@ class InspectionPipeline:
         usable = [item for item in prepared if item.quality.status == "PASS"]
         if not usable:
             best = max(prepared, key=lambda item: (item.score.total, item.candidate.confidence))
+            if quality_observation:
+                return self._complete_candidate(
+                    event_id=event_id,
+                    camera_id=camera_id,
+                    best=best,
+                    timing=timing,
+                    started=started,
+                )
             quality_failed = best.quality.state == STAGE_FAILED
             reason = "QUALITY_RUNTIME_ERROR" if quality_failed else "QUALITY_REJECTED"
             status = "ERROR" if quality_failed else "REVIEW"
@@ -217,6 +232,30 @@ class InspectionPipeline:
             )
 
         best = max(usable, key=lambda item: (item.score.total, item.candidate.confidence))
+
+        return self._complete_candidate(
+            event_id=event_id,
+            camera_id=camera_id,
+            best=best,
+            timing=timing,
+            started=started,
+        )
+
+    def _complete_candidate(
+        self,
+        *,
+        event_id: str,
+        camera_id: str,
+        best: PreparedCandidate,
+        timing: dict[str, float],
+        started: float,
+    ) -> InspectionResult:
+        """Run the shared OCR/barcode/extraction/validation stages.
+
+        ``quality_observation`` reaches this method only from the evaluator's
+        explicit opt-in path. The default production path still returns at
+        the quality gate above.
+        """
 
         with timed(timing, "ocr_ms"):
             try:

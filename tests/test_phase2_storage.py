@@ -5,6 +5,7 @@ import pytest
 from label_inspection.contracts import ArtifactRef, TriggerEvent
 from label_inspection.storage import (
     ArtifactIntegrityError,
+    DeferredArtifactStore,
     InMemoryArtifactStore,
     PutStatus,
     StorageConflictError,
@@ -56,6 +57,34 @@ def test_content_is_verified_against_reference_before_storage_io():
     assert error.stage == "ARTIFACT_STORAGE"
     assert error.retryable is False
     assert store.head(reference.bucket, reference.key) is None
+
+
+def test_deferred_store_retries_connection_after_transient_failure():
+    backend = InMemoryArtifactStore()
+    backend.ensure_bucket("vision-inspections")
+    attempts = 0
+
+    def connect():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("MinIO unavailable")
+        return backend
+
+    store = DeferredArtifactStore(
+        bucket="vision-inspections",
+        store_factory=connect,
+    )
+    content = b"recoverable-artifact"
+    reference = _ref(key="station/event/source/label_crop.png", content=content)
+
+    with pytest.raises(RuntimeError, match="unavailable"):
+        store.put_if_absent(reference, content)
+
+    result = store.put_if_absent(reference, content)
+
+    assert result.status is PutStatus.CREATED
+    assert attempts == 2
 
 
 def test_event_object_keys_are_deterministic_and_separate_domains():

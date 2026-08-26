@@ -8,14 +8,23 @@ versions in the `phase2` optional dependency group in `pyproject.toml`.
 ## Provisioning
 
 An administrator provisions the configured artifact bucket before starting the
-station or worker service. Provisioning may call `ensure_bucket` once during
-installation. The runtime services only call `validate_bucket`; they must not
-create buckets while processing an event.
+worker service. Provisioning may call `ensure_bucket` once during installation.
+The worker validates the bucket at startup. The station keeps capture and local
+spool startup independent from MinIO; its delivery pump validates/connects
+lazily when a pending record needs delivery. Runtime services must not create
+buckets while processing an event.
 
 The runtime identity needs only the bucket/object operations required by the
 configured workflow: bucket existence validation, object HEAD/GET for worker
 inputs, and create-only object writes for station/result artifacts. It must not
 have broad bucket-admin permissions in the steady-state service role.
+
+The station's MinIO adapter intentionally uses the pinned client's private
+`_put_object` primitive because the public `put_object` API cannot express an
+atomic `If-None-Match: *` create-only write. A HEAD-then-PUT fallback would
+reintroduce a race between idempotent retry and conflicting content. This
+compatibility surface remains NOT RUNTIME VERIFIED until tested against the
+deployed MinIO server.
 
 ## Worker supervision
 

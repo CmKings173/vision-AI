@@ -14,7 +14,7 @@ SAFE TO MERGE: **NO**
 SAFE TO RUN GX10 ACCEPTANCE: **NO**
 
 Observed final evidence: scoped Ruff passed; non-runtime pytest completed with
-`310 passed, 1 skipped, 3 deselected`; three critical regression probes and
+`316 passed, 1 skipped, 3 deselected`; three critical regression probes and
 the R9 operational focused suite passed;
 `compileall`, source-layout import smoke, station CLI help, and
 `git diff --check` passed. The skip is the Windows-only inability to create the
@@ -61,8 +61,8 @@ symlink required by the containment test.
 - Run Linux symlink containment test; Windows lacked symlink-create privilege.
 - Install and exercise the systemd unit on the target host; the repository
   contains the supervisor contract but it is not deployed by this review.
-- Generate a machine-native `uv.lock` when the uv executable is available;
-  exact MinIO/Pika versions are already controlled in `pyproject.toml`.
+- Review the generated machine-native `uv.lock`; exact MinIO/Pika versions are
+  controlled in `pyproject.toml` and their transitive graph is locked.
 - Approve retention before any cleanup implementation.
 - Confirm Nvidia/Customer/Our Part Number mapping; implementation is unchanged.
 

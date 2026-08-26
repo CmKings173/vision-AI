@@ -63,7 +63,7 @@ is collected.
 - [x] Add MinIO adapter and deterministic bucket/key layout.
 - [x] Add checksum-idempotent upload and conflict detection.
 - [x] Upload inference artifacts and terminal station results.
-- [ ] Implement dispatcher `LOCAL_ONLY → ARTIFACTS_READY`.
+- [x] Implement dispatcher `LOCAL_ONLY → ARTIFACTS_READY`.
 - [x] Add secret-redaction tests.
 - [ ] Run outage/restart integration test.
 - [x] Update `.env.example` and runbook.
@@ -74,7 +74,7 @@ is collected.
 - [x] Add durable exchange/routing/queue/DLQ-compatible topology.
 - [x] Publish persistent messages with confirms.
 - [x] Publish exact frozen `job.json` without reconstruction.
-- [ ] Implement `ARTIFACTS_READY → PUBLISHED` only after confirm.
+- [x] Implement `ARTIFACTS_READY → JOB_PUBLISHED` only after confirm.
 - [x] Implement persistent station controller/entrypoint.
 - [x] Verify station does not import/build/call OCR runtime.
 - [ ] Run broker outage/restart integration test.
@@ -85,7 +85,7 @@ is collected.
 - [x] Use prefetch 1 and manual ACK.
 - [x] Validate job, download exact crop and verify checksum.
 - [x] Validate existing durable result for logical idempotency.
-- [ ] Preserve sequential OCR → ZXing → extraction → validation.
+- [x] Preserve sequential OCR → ZXing → extraction → validation.
 - [x] Persist versioned durable result before ACK.
 - [x] Preserve current extractor/profile semantics.
 - [x] Record profile/locator/extractor versions and semantic blocker.

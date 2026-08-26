@@ -21,6 +21,7 @@ class PumpReport:
     uploaded_records: int
     published_jobs: int
     error_code: str | None = None
+    delivery_health: str = "NOT_CHECKED"
 
 
 class DeliveryPump:
@@ -43,7 +44,12 @@ class DeliveryPump:
         self._publisher = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self.last_report = PumpReport(0, 0)
+        self._delivery_health = "NOT_CHECKED"
+        self.last_report = PumpReport(0, 0, delivery_health=self._delivery_health)
+
+    @property
+    def delivery_health(self) -> str:
+        return self._delivery_health
 
     @property
     def alive(self) -> bool:
@@ -54,6 +60,14 @@ class DeliveryPump:
         published = 0
         try:
             dispatch_reports = self.dispatcher.dispatch_pending()
+            dispatch_error = next(
+                (report.error_code for report in dispatch_reports if report.error_code),
+                None,
+            )
+            if dispatch_error:
+                self._delivery_health = "DEGRADED"
+            elif dispatch_reports:
+                self._delivery_health = "READY"
             for dispatch_report in dispatch_reports:
                 self._log(
                     dispatch_report.event_id,
@@ -67,12 +81,9 @@ class DeliveryPump:
                     uploaded_objects=dispatch_report.uploaded_objects,
                     artifact_upload_ms=dispatch_report.artifact_upload_ms,
                     error_code=dispatch_report.error_code,
+                    delivery_health=self._delivery_health,
                 )
             uploaded = sum(report.uploaded_objects > 0 for report in dispatch_reports)
-            dispatch_error = next(
-                (report.error_code for report in dispatch_reports if report.error_code),
-                None,
-            )
             has_ready_job = any(
                 record.record_type is RecordType.INFERENCE_JOB
                 and record.state.delivery_status is DeliveryStatus.ARTIFACTS_READY
@@ -93,13 +104,20 @@ class DeliveryPump:
                         ),
                     )
                 published = sum(not receipt.already_published for receipt in receipts)
-            report = PumpReport(uploaded, published, error_code=dispatch_error)
+            report = PumpReport(
+                uploaded,
+                published,
+                error_code=dispatch_error,
+                delivery_health=self._delivery_health,
+            )
         except Exception as exc:  # noqa: BLE001 - keep background pump alive
             self._close_publisher()
+            self._delivery_health = "DEGRADED"
             report = PumpReport(
                 uploaded,
                 published,
                 error_code=str(getattr(exc, "code", type(exc).__name__)).upper(),
+                delivery_health=self._delivery_health,
             )
         self.last_report = report
         return report

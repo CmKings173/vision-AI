@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +36,7 @@ from label_inspection.station.controller import StationController, StationTrigge
 from label_inspection.station.dispatcher import OutboxDispatcher
 from label_inspection.station.service import DeliveryPump, StationService
 from label_inspection.station.spool import SpoolCapacityError
-from label_inspection.storage import MinioArtifactStore
+from label_inspection.storage import DeferredArtifactStore, MinioArtifactStore
 
 
 class _PublisherSession:
@@ -52,84 +52,32 @@ class _PublisherSession:
             self.connection.close()
 
 
-def _publisher_factory(config: Settings, spool):
-    def create():
-        try:
-            import pika
-        except ImportError as exc:
-            raise RuntimeError(
-                "Phase 2 station requires the optional phase2 dependencies."
-            ) from exc
-        connection = pika.BlockingConnection(pika.URLParameters(config.rabbitmq_url))
-        channel = connection.channel()
-        topology = TopologyConfig.from_retry_delays(config.retry_delays_ms)
-        RabbitTopology(topology).declare(channel)
-        transport = PikaConfirmedPublisher(channel)
-        return _PublisherSession(
-            connection,
-            FrozenJobPublisher(
-                spool=spool,
-                publisher=transport,
-                topology=topology,
-            ),
-        )
-
-    return create
+@dataclass(frozen=True)
+class StationRuntime:
+    service: StationService
+    camera: RTSPCamera
+    spool: object
+    delivery_pump: DeliveryPump
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Phase 2 persistent station service")
-    parser.add_argument("--source", help="Direct RTSP/HTTP camera URL")
-    parser.add_argument("--roi", help="Normalized FixedROI x1,y1,x2,y2")
-    parser.add_argument("--rotate-deg", type=int)
-    parser.add_argument(
-        "--triggers",
-        type=int,
-        default=0,
-        help="Number of manual triggers; 0 keeps running until Ctrl-C",
-    )
-    parser.add_argument("--connect-timeout-s", type=float, default=20.0)
-    args = parser.parse_args()
-    if args.triggers < 0 or args.connect_timeout_s <= 0:
-        print('{"status":"ERROR","code":"INVALID_ARGUMENT"}')
-        return 2
+def build_station_runtime(config: Settings, source: str) -> StationRuntime:
+    """Compose capture/local-spool first; defer network delivery to the pump."""
 
-    base = Settings()
-    try:
-        source = resolve_camera_source(args.source, base.rtsp_url)
-        config = replace(
-            base,
-            detector="fixed-roi",
-            label_roi=args.roi or base.label_roi,
-            camera_rotate_degrees=(
-                base.camera_rotate_degrees
-                if args.rotate_deg is None
-                else args.rotate_deg
-            ),
-        )
-        config.validate_phase2_station()
-        spool = build_local_spool(config)
-        preparer = build_station_preparer(config)
-        store = MinioArtifactStore.connect(
+    spool = build_local_spool(config)
+    preparer = build_station_preparer(config)
+
+    def connect_minio():
+        return MinioArtifactStore.connect(
             endpoint=config.minio_endpoint,
             access_key=config.minio_access_key,
             secret_key=config.minio_secret_key,
             secure=config.minio_secure,
         )
-        store.validate_bucket(config.artifact_bucket)
-    except Exception as exc:  # noqa: BLE001 - process boundary emits a safe code
-        print(
-            json.dumps(
-                {
-                    "status": "ERROR",
-                    "stage": "SETUP",
-                    "code": type(exc).__name__.upper(),
-                },
-                separators=(",", ":"),
-            )
-        )
-        return 1
 
+    store = DeferredArtifactStore(
+        bucket=config.artifact_bucket,
+        store_factory=connect_minio,
+    )
     frame_buffer = FrameBuffer(
         max_size=config.buffer_size,
         window_ms=config.buffer_window_ms,
@@ -178,7 +126,7 @@ def main() -> int:
             },
         },
     )
-    pump = DeliveryPump(
+    delivery_pump = DeliveryPump(
         dispatcher=OutboxDispatcher(spool=spool, store=store),
         publisher_factory=_publisher_factory(config, spool),
         interval_s=config.dispatch_interval_s,
@@ -188,8 +136,100 @@ def main() -> int:
         acquisition=acquisition,
         frame_buffer=frame_buffer,
         controller=controller,
-        delivery_pump=pump,
+        delivery_pump=delivery_pump,
     )
+    return StationRuntime(
+        service=service,
+        camera=camera,
+        spool=spool,
+        delivery_pump=delivery_pump,
+    )
+
+
+def _publisher_factory(config: Settings, spool):
+    def create():
+        connection = None
+        try:
+            try:
+                import pika
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Phase 2 station requires the optional phase2 dependencies."
+                ) from exc
+            connection = pika.BlockingConnection(
+                pika.URLParameters(config.rabbitmq_url)
+            )
+            channel = connection.channel()
+            topology = TopologyConfig.from_retry_delays(config.retry_delays_ms)
+            RabbitTopology(topology).declare(channel)
+            transport = PikaConfirmedPublisher(channel)
+            return _PublisherSession(
+                connection,
+                FrozenJobPublisher(
+                    spool=spool,
+                    publisher=transport,
+                    topology=topology,
+                ),
+            )
+        except Exception:
+            if connection is not None and getattr(connection, "is_open", False):
+                try:
+                    connection.close()
+                except Exception:  # noqa: BLE001,S110 - best-effort SDK cleanup
+                    pass
+            raise
+
+    return create
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Phase 2 persistent station service")
+    parser.add_argument("--source", help="Direct RTSP/HTTP camera URL")
+    parser.add_argument("--roi", help="Normalized FixedROI x1,y1,x2,y2")
+    parser.add_argument("--rotate-deg", type=int)
+    parser.add_argument(
+        "--triggers",
+        type=int,
+        default=0,
+        help="Number of manual triggers; 0 keeps running until Ctrl-C",
+    )
+    parser.add_argument("--connect-timeout-s", type=float, default=20.0)
+    args = parser.parse_args()
+    if args.triggers < 0 or args.connect_timeout_s <= 0:
+        print('{"status":"ERROR","code":"INVALID_ARGUMENT"}')
+        return 2
+
+    base = Settings()
+    try:
+        source = resolve_camera_source(args.source, base.rtsp_url)
+        config = replace(
+            base,
+            detector="fixed-roi",
+            label_roi=args.roi or base.label_roi,
+            camera_rotate_degrees=(
+                base.camera_rotate_degrees
+                if args.rotate_deg is None
+                else args.rotate_deg
+            ),
+        )
+        config.validate_phase2_station()
+        runtime = build_station_runtime(config, source)
+    except Exception as exc:  # noqa: BLE001 - process boundary emits a safe code
+        print(
+            json.dumps(
+                {
+                    "status": "ERROR",
+                    "stage": "SETUP",
+                    "code": type(exc).__name__.upper(),
+                },
+                separators=(",", ":"),
+            )
+        )
+        return 1
+
+    service = runtime.service
+    camera = runtime.camera
+    spool = runtime.spool
 
     completed = 0
     service.start()
@@ -204,6 +244,8 @@ def main() -> int:
                     "station_id": config.station_id,
                     "camera_id": config.camera_id,
                     "spool_root": str(spool.root),
+                    "capture_ready": True,
+                    "delivery_health": runtime.delivery_pump.delivery_health,
                 },
                 separators=(",", ":"),
             )
@@ -248,6 +290,7 @@ def main() -> int:
                         "delivery_status": report.record.state.delivery_status.value,
                         "spool_write_ms": report.spool_write_ms,
                         "trigger_to_local_commit_ms": report.trigger_to_local_commit_ms,
+                        "delivery_health": runtime.delivery_pump.delivery_health,
                     },
                     separators=(",", ":"),
                 )

@@ -1,9 +1,10 @@
 # Phase 2 Checkpoint 2B Report - Atomic Local Spool
 
-Status: **IMPLEMENTED AND TESTED LOCALLY - WAITING FOR HUMAN 2B REVIEW**
+Status: **HISTORICAL CHECKPOINT SNAPSHOT - IMPLEMENTED AND TESTED LOCALLY**
 
-Checkpoint 2C has not started. This report makes no MinIO, RabbitMQ, worker, or
-GX10 runtime claim.
+This report records the 2B checkpoint only. Later checkpoint status is tracked
+in `tasks/phase2_implementation_report.md`; this report makes no real MinIO,
+RabbitMQ, worker, or GX10 runtime claim.
 
 ## Implemented
 
@@ -20,16 +21,16 @@ GX10 runtime claim.
 - Early preparation-error terminal layout with `result.json` and `state.json`;
   no image or inference job is invented.
 - Atomic monotonic delivery transitions:
-  `LOCAL_ONLY -> ARTIFACTS_READY -> PUBLISHED`; same-state retries are
+  `LOCAL_ONLY -> ARTIFACTS_READY -> JOB_PUBLISHED`; same-state retries are
   idempotent and backward/skip transitions are rejected.
-- Non-destructive startup recovery scan. Valid pending/published records,
+- Non-destructive startup recovery scan. Valid pending/JOB_PUBLISHED records,
   corrupt final records, and incomplete temp directories are reported
   separately. No committed or partial evidence is deleted.
 - Recovery validates strict state/result/job schemas, event identity, required
   files, byte size, SHA-256, job artifact references, and path containment.
 - Configurable fail-closed limits for pending events, logical pending bytes,
   and minimum free disk. Corrupt/incomplete top-level entries count
-  conservatively as pending. PUBLISHED records no longer count as pending but
+  conservatively as pending. JOB_PUBLISHED records no longer count as pending but
   still consume disk and therefore remain covered by the free-space guard.
 - Exact prospective event bytes are calculated before temp-directory creation.
 - Station factory wiring through `build_local_spool()`; no OCR/ZXing import or

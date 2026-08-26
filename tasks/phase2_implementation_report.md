@@ -7,7 +7,7 @@ Date: 2026-08-25
 Final local verification evidence:
 
 - Ruff: all Phase 2 implementation and test files passed.
-- Pytest: `310 passed, 1 skipped, 3 deselected` (`runtime` excluded).
+- Pytest: `316 passed, 1 skipped, 3 deselected` (`runtime` excluded).
 - Fault matrix: three critical regression probes plus the Phase 2 operational
   hardening probes passed.
 - `compileall`, source-layout import smoke, station CLI help, and
@@ -58,6 +58,10 @@ the ring buffer, FixedROI, or crop reconstruction.
   stay `LOCAL_ONLY` and converge through idempotent retry.
 - Station startup does not probe MinIO; camera/local spool remain usable during
   an object-store outage until configured backpressure is reached.
+- Station startup validates local configuration/spool capacity, starts camera
+  acquisition, and becomes capture-ready before any MinIO connection attempt.
+  The delivery pump connects lazily; its health is `NOT_CHECKED` before the
+  first delivery attempt and `DEGRADED` when MinIO/Rabbit delivery is down.
 
 ## 2D - RabbitMQ and station service
 
@@ -121,8 +125,7 @@ the ring buffer, FixedROI, or crop reconstruction.
   systemd unit can restart the worker. See
   `tasks/phase2_operations_runbook.md`.
 - MinIO 7.2.20 and Pika 1.4.4 are exact controlled requirements in
-  `pyproject.toml`. A generated `uv.lock` remains an environment task because
-  the local uv executable could not be run.
+  `pyproject.toml`; `uv.lock` records the resolved transitive dependency graph.
 
 ## Run on GX10
 

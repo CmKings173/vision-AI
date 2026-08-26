@@ -12,6 +12,7 @@ from .base import (
     StorageConflictError,
     StorageError,
 )
+from .deferred import DeferredArtifactStore
 from .keys import ArtifactKeyPolicy, EventObjectKeys, event_object_keys
 from .minio_store import MinioArtifactStore
 
@@ -20,6 +21,7 @@ __all__ = [
     "ArtifactKeyPolicy",
     "ArtifactPolicyError",
     "ArtifactStore",
+    "DeferredArtifactStore",
     "EventObjectKeys",
     "InMemoryArtifactStore",
     "MinioArtifactStore",

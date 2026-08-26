@@ -107,7 +107,7 @@ Implementation dự kiến:
 Tests trước:
 
 - Delivery, processing và business status không thể gán nhầm type/value.
-- Job trước publish không claim `PUBLISHED`.
+- Job trước publish không claim `JOB_PUBLISHED`.
 - Status ownership được encode/test: station, dispatcher, worker và validator không ghi chồng domain của nhau.
 - Quality reject bắt buộc là terminal `COMPLETED + REVIEW`, `inference_executed=false`, không có inference job.
 - Preparation technical error bắt buộc là terminal `ERROR + null`, không biến thành business `FAIL`, không có inference job.
@@ -189,7 +189,7 @@ Implementation dự kiến:
 
 Tests trước:
 
-- State transitions hợp lệ: `LOCAL_ONLY → ARTIFACTS_READY → PUBLISHED`.
+- State transitions hợp lệ: `LOCAL_ONLY → ARTIFACTS_READY → JOB_PUBLISHED`.
 - Reject backward/skip transition không được phép.
 - `state.json` update atomic.
 - Restart scan đọc được final event và bỏ qua temp event.
@@ -199,7 +199,7 @@ Implementation dự kiến:
 
 - Spool event API và atomic state update.
 - Startup scanner trả pending events theo deterministic order.
-- Không auto-delete PUBLISHED events.
+- Không auto-delete JOB_PUBLISHED events.
 
 #### 2B.3 Terminal attempt durability
 
@@ -307,7 +307,7 @@ Tests trước/integration:
 Tests trước:
 
 - Publisher chỉ nhận event `ARTIFACTS_READY`.
-- Publisher confirm success mới chuyển `PUBLISHED`.
+- Publisher confirm success mới chuyển `JOB_PUBLISHED`.
 - Nack/timeout/connection failure giữ `ARTIFACTS_READY`.
 - Restart republish an toàn cùng `event_id`.
 - Message body không chứa image bytes hoặc secret.
@@ -331,8 +331,8 @@ Implementation dự kiến:
 ### Acceptance criteria 2D
 
 - Camera/trigger latency được tách khỏi worker inference latency.
-- Broker down: event vẫn trong spool và station không claim published.
-- Confirmed publish: state durable `PUBLISHED`.
+- Broker down: event vẫn trong spool và station không claim `JOB_PUBLISHED`.
+- Confirmed publish: state durable `JOB_PUBLISHED`.
 - Backlog threshold bảo vệ disk/station.
 
 ## 8. Checkpoint 2E — Resident inference worker
@@ -411,7 +411,7 @@ Chứng minh behavior dưới failure và hoàn tất production-foundation acce
 | Station chết sau rename trước upload | Restart scan và upload |
 | MinIO down | Event giữ local state, retry có backoff |
 | Station chết sau upload trước publish | Resume publish từ `ARTIFACTS_READY` |
-| Broker nack/timeout | Không claim `PUBLISHED` |
+| Broker nack/timeout | Không claim `JOB_PUBLISHED` |
 | Worker chết trước inference | Rabbit redelivery |
 | Worker chết sau inference trước result | Redelivery; có thể infer lại vì chưa durable result |
 | Worker chết sau result trước ACK | Redelivery; detect valid result và ACK không infer lại |

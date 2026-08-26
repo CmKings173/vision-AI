@@ -1,5 +1,9 @@
 # Phase 2 Production Foundation V1 — Repository Audit
 
+This is a historical pre-implementation snapshot. Its original `PUBLISHED`
+state references describe the design at that time and are not the current
+delivery state; current states are documented in the technical design.
+
 ## 1. Mục đích và phạm vi
 
 Tài liệu này ghi lại hiện trạng repository trước khi triển khai Phase 2 Production Foundation V1. Nó là cầu nối giữa code POC đang chạy và thiết kế kỹ thuật tại `tasks/phase2_production_foundation_technical_design.md`.

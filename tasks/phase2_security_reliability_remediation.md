@@ -279,26 +279,27 @@ No GX10 acceptance or production-readiness claim is permitted during this pass.
   storage protocol/adapters, worker timing/reporting, Phase 2 tests, systemd
   unit and operations runbook. `pyproject.toml` keeps MinIO 7.2.20 and Pika
   1.4.4 as exact controlled transport requirements.
-- TEST ADDED: startup `validate_bucket` and no-per-artifact-provisioning
-  checks, shared runtime retry handler check, exclusive timing assertions,
-  broker-loss exit contract, and deployment-documentation checks.
+- TEST ADDED: worker startup `validate_bucket`, station deferred delivery and
+  no-per-artifact-provisioning checks, shared runtime retry handler check,
+  exclusive timing assertions, broker-loss exit contract, and
+  deployment-documentation checks.
 - BEFORE FIX: the dispatcher/worker called bucket provisioning during runtime;
   worker timing did not expose image decode separately; the runtime had no
   explicit restart artifact; and the test-only handler remained as a separate
   path.
-- AFTER FIX: bucket provisioning is installation/admin responsibility and
-  runtime calls only `validate_bucket`; timing fields are exclusive; broker
-  consumption failure emits `BROKER_CONNECTION_LOST` and exits for supervisor
-  restart; runtime and tests use `RetryingWorkerMessageHandler`.
+- AFTER FIX: bucket provisioning is installation/admin responsibility; the
+  worker validates at startup and station delivery validates lazily; timing
+  fields are exclusive; broker consumption failure emits
+  `BROKER_CONNECTION_LOST` and exits for supervisor restart; runtime and tests
+  use `RetryingWorkerMessageHandler`.
 - COMMANDS RUN: focused R9 Phase 2 test selection; full non-runtime pytest;
   compileall; `git diff --check`; narrow Ruff; three critical regression
   probes.
-- OBSERVED RESULT: focused R9 `39 passed`; full relevant suite `310 passed,
+- OBSERVED RESULT: focused R9 `39 passed`; full relevant suite `316 passed,
   1 skipped, 3 deselected`; compileall, diff-check and narrow Ruff passed.
 - RUNTIME VERIFIED: `NO` — no real MinIO/RabbitMQ or systemd environment was
-  available. `uv lock` could not be run because the local uv executable was
-  blocked by the environment; exact transport pins remain in pyproject as the
-  controlled reproducibility mechanism.
+  available. `uv.lock` is present and was checked with the repository workflow;
+  real transport behavior remains unverified.
 - REMAINING RISK: exercise private MinIO create-only upload behavior, RabbitMQ
   confirm/reconnect/redelivery, systemd restart and Linux durability on GX10
   before merge or acceptance approval.

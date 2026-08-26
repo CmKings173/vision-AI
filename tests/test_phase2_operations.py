@@ -9,7 +9,8 @@ def test_runtime_validates_preprovisioned_bucket_and_never_creates_per_artifact(
         "src/label_inspection/worker/inference_worker.py"
     ).read_text("utf-8")
 
-    assert "store.validate_bucket(config.artifact_bucket)" in station
+    assert "DeferredArtifactStore" in station
+    assert "store.validate_bucket(config.artifact_bucket)" not in station
     assert "store.validate_bucket(config.artifact_bucket)" in worker
     assert "store.ensure_bucket" not in dispatcher
     assert "store.ensure_bucket" not in inference

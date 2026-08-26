@@ -1,5 +1,9 @@
+import sys
 import time
+from dataclasses import replace
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from label_inspection.camera.frame_buffer import FrameBuffer
@@ -13,6 +17,47 @@ from label_inspection.station.controller import StationController, StationTrigge
 from label_inspection.station.preparation import StationPreparer
 from label_inspection.station.spool import LocalSpool, SpoolCommitError
 from tests.fixtures.quality import sharp_label
+
+
+def _phase2_station_config(tmp_path):
+    from label_inspection.config import Settings
+
+    return replace(
+        Settings(),
+        spool_root=str(tmp_path / "spool"),
+        spool_max_pending_events=10,
+        spool_max_pending_bytes=10_000_000,
+        spool_min_free_disk_bytes=0,
+        buffer_window_ms=1_000,
+        max_frame_age_ms=1_000,
+        detector="fixed-roi",
+        label_roi="0.05,0.05,0.95,0.95",
+        minio_endpoint="127.0.0.1:9000",
+        minio_access_key="test-access",
+        minio_secret_key="test-secret",
+        rabbitmq_url="amqp://vision:test@127.0.0.1:5672/%2F",
+        dispatch_interval_s=60.0,
+    )
+
+
+class _CompositionCamera:
+    def __init__(self, source, **kwargs):
+        self.source = source
+        self._closed = False
+
+    def read(self):
+        if self._closed:
+            return None
+        return FramePacket(
+            frame_id=1,
+            captured_at=time.time(),
+            frame=np.asarray(sharp_label()),
+            source=self.source,
+            captured_monotonic=time.monotonic(),
+        )
+
+    def close(self):
+        self._closed = True
 
 
 def _controller(tmp_path):
@@ -93,6 +138,123 @@ def test_station_entrypoint_does_not_require_minio_probe_before_camera_start():
     setup_before_frame_buffer = source.split("frame_buffer = FrameBuffer", 1)[0]
 
     assert "store.ensure_bucket" not in setup_before_frame_buffer
+
+
+@pytest.mark.parametrize("minio_failure", ["connect", "validate"])
+def test_station_composition_starts_capture_and_commits_when_minio_is_unavailable(
+    tmp_path, monkeypatch, minio_failure
+):
+    from scripts import run_station
+
+    config = _phase2_station_config(tmp_path)
+    config.validate_phase2_station()
+    monkeypatch.setattr(run_station, "RTSPCamera", _CompositionCamera)
+    connect_calls = []
+
+    def fail_minio_connect(*args, **kwargs):
+        connect_calls.append((args, kwargs))
+        raise RuntimeError("MinIO unavailable")
+
+    class _FailingValidationStore:
+        def validate_bucket(self, bucket):
+            raise RuntimeError("MinIO bucket unavailable")
+
+    if minio_failure == "connect":
+        monkeypatch.setattr(
+            run_station.MinioArtifactStore,
+            "connect",
+            staticmethod(fail_minio_connect),
+        )
+    else:
+        def validate_failing_connect(*args, **kwargs):
+            connect_calls.append((args, kwargs))
+            return _FailingValidationStore()
+
+        monkeypatch.setattr(
+            run_station.MinioArtifactStore,
+            "connect",
+            staticmethod(validate_failing_connect),
+        )
+
+    runtime = run_station.build_station_runtime(config, "rtsp://camera")
+    assert connect_calls == []
+
+    runtime.service.start()
+    try:
+        assert runtime.service.wait_ready(timeout_s=2.0)
+        assert runtime.service.acquisition.alive
+
+        report = runtime.service.trigger()
+        assert report.durable_local is True
+        assert report.record.state.delivery_status is DeliveryStatus.LOCAL_ONLY
+
+        delivery = runtime.delivery_pump.run_once()
+        assert delivery.delivery_health == "DEGRADED"
+        assert connect_calls
+        assert runtime.spool.open_record(report.event_id).state.delivery_status is DeliveryStatus.LOCAL_ONLY
+    finally:
+        runtime.service.stop(timeout_s=1.0)
+
+
+@pytest.mark.parametrize("failure_stage", ["channel", "topology", "publisher"])
+def test_publisher_factory_closes_connection_after_construction_failure(
+    tmp_path, monkeypatch, failure_stage
+):
+    from scripts import run_station
+
+    config = _phase2_station_config(tmp_path)
+
+    class _Connection:
+        def __init__(self):
+            self.is_open = True
+            self.close_calls = 0
+
+        def channel(self):
+            if failure_stage == "channel":
+                raise RuntimeError("channel setup failed")
+            return object()
+
+        def close(self):
+            self.close_calls += 1
+            self.is_open = False
+
+    connection = _Connection()
+    monkeypatch.setitem(
+        sys.modules,
+        "pika",
+        SimpleNamespace(
+            URLParameters=lambda value: value,
+            BlockingConnection=lambda parameters: connection,
+        ),
+    )
+
+    if failure_stage == "topology":
+        class _FailingTopology:
+            def __init__(self, config):
+                raise RuntimeError("topology setup failed")
+
+            def declare(self, channel):
+                raise AssertionError("topology declaration should not be reached")
+
+        monkeypatch.setattr(run_station, "RabbitTopology", _FailingTopology)
+    elif failure_stage == "publisher":
+        class _WorkingTopology:
+            def __init__(self, config):
+                self.config = config
+
+            def declare(self, channel):
+                return None
+
+        def fail_publisher(channel):
+            raise RuntimeError("publisher setup failed")
+
+        monkeypatch.setattr(run_station, "RabbitTopology", _WorkingTopology)
+        monkeypatch.setattr(run_station, "PikaConfirmedPublisher", fail_publisher)
+
+    with pytest.raises(RuntimeError):
+        run_station._publisher_factory(config, object())()
+
+    assert connection.close_calls == 1
 
 
 def test_post_acceptance_spool_failure_preserves_event_identity_and_safe_error(

@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from label_inspection.app import build_pipeline
+from label_inspection.app import build_local_spool, build_pipeline
 from label_inspection.camera.security import resolve_camera_source
 from label_inspection.config import Settings
 from label_inspection.ocr.tensorrt_ocr import TensorRTOCRAdapter
@@ -153,3 +153,47 @@ def test_camera_rotation_is_limited_to_quarter_turns():
     valid_settings(camera_rotate_degrees=90).validate()
     with pytest.raises(ValueError, match="VISION_CAMERA_ROTATE_DEG"):
         valid_settings(camera_rotate_degrees=45).validate()
+
+
+def test_station_spool_limits_are_environment_configurable(monkeypatch):
+    monkeypatch.setenv("VISION_SPOOL_ROOT", "/var/lib/vision/spool")
+    monkeypatch.setenv("VISION_SPOOL_MAX_PENDING_EVENTS", "42")
+    monkeypatch.setenv("VISION_SPOOL_MAX_PENDING_BYTES", "123456")
+    monkeypatch.setenv("VISION_SPOOL_MIN_FREE_DISK_BYTES", "654321")
+
+    configured = Settings()
+
+    assert configured.spool_root == "/var/lib/vision/spool"
+    assert configured.spool_max_pending_events == 42
+    assert configured.spool_max_pending_bytes == 123456
+    assert configured.spool_min_free_disk_bytes == 654321
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"spool_root": "  "}, "VISION_SPOOL_ROOT"),
+        ({"spool_max_pending_events": 0}, "MAX_PENDING_EVENTS"),
+        ({"spool_max_pending_bytes": 0}, "MAX_PENDING_BYTES"),
+        ({"spool_min_free_disk_bytes": -1}, "MIN_FREE_DISK_BYTES"),
+    ],
+)
+def test_invalid_station_spool_configuration_fails_validation(override, message):
+    with pytest.raises(ValueError, match=message):
+        valid_settings(**override).validate_station()
+
+
+def test_local_spool_factory_wires_station_capacity_settings(tmp_path):
+    spool = build_local_spool(
+        valid_settings(
+            spool_root=str(tmp_path / "spool"),
+            spool_max_pending_events=12,
+            spool_max_pending_bytes=3456,
+            spool_min_free_disk_bytes=789,
+        )
+    )
+
+    assert spool.root == (tmp_path / "spool").resolve()
+    assert spool.limits.max_pending_events == 12
+    assert spool.limits.max_pending_bytes == 3456
+    assert spool.limits.min_free_disk_bytes == 789

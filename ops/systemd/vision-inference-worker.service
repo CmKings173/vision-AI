@@ -1,0 +1,17 @@
+[Unit]
+Description=Vision-AI inference worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vision
+WorkingDirectory=/opt/vision-AI
+EnvironmentFile=/etc/vision-ai/worker.env
+ExecStart=/opt/vision-AI/.venv/bin/python /opt/vision-AI/scripts/run_worker.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

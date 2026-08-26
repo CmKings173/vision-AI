@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""Run the Phase 2 station service (capture/preparation/outbox only)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from label_inspection.app import build_local_spool, build_station_preparer
+from label_inspection.camera.acquisition import CameraAcquisition
+from label_inspection.camera.frame_buffer import FrameBuffer
+from label_inspection.camera.rtsp import RTSPCamera
+from label_inspection.camera.security import resolve_camera_source
+from label_inspection.config import Settings
+from label_inspection.extraction.profiles import (
+    DGX_SPARK_MAPPING_SUMMARY,
+    DGX_SPARK_PROFILE_VERSION,
+    DGX_SPARK_SEMANTIC_BLOCKERS,
+)
+from label_inspection.messaging import (
+    FrozenJobPublisher,
+    PikaConfirmedPublisher,
+    RabbitTopology,
+    StructuredLifecycleLogger,
+    TopologyConfig,
+)
+from label_inspection.station.controller import StationController, StationTriggerFailure
+from label_inspection.station.dispatcher import OutboxDispatcher
+from label_inspection.station.service import DeliveryPump, StationService
+from label_inspection.station.spool import SpoolCapacityError
+from label_inspection.storage import MinioArtifactStore
+
+
+class _PublisherSession:
+    def __init__(self, connection, publisher: FrozenJobPublisher) -> None:
+        self.connection = connection
+        self.publisher = publisher
+
+    def publish_pending(self):
+        return self.publisher.publish_pending()
+
+    def close(self) -> None:
+        if getattr(self.connection, "is_open", False):
+            self.connection.close()
+
+
+def _publisher_factory(config: Settings, spool):
+    def create():
+        try:
+            import pika
+        except ImportError as exc:
+            raise RuntimeError(
+                "Phase 2 station requires the optional phase2 dependencies."
+            ) from exc
+        connection = pika.BlockingConnection(pika.URLParameters(config.rabbitmq_url))
+        channel = connection.channel()
+        topology = TopologyConfig.from_retry_delays(config.retry_delays_ms)
+        RabbitTopology(topology).declare(channel)
+        transport = PikaConfirmedPublisher(channel)
+        return _PublisherSession(
+            connection,
+            FrozenJobPublisher(
+                spool=spool,
+                publisher=transport,
+                topology=topology,
+            ),
+        )
+
+    return create
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Phase 2 persistent station service")
+    parser.add_argument("--source", help="Direct RTSP/HTTP camera URL")
+    parser.add_argument("--roi", help="Normalized FixedROI x1,y1,x2,y2")
+    parser.add_argument("--rotate-deg", type=int)
+    parser.add_argument(
+        "--triggers",
+        type=int,
+        default=0,
+        help="Number of manual triggers; 0 keeps running until Ctrl-C",
+    )
+    parser.add_argument("--connect-timeout-s", type=float, default=20.0)
+    args = parser.parse_args()
+    if args.triggers < 0 or args.connect_timeout_s <= 0:
+        print('{"status":"ERROR","code":"INVALID_ARGUMENT"}')
+        return 2
+
+    base = Settings()
+    try:
+        source = resolve_camera_source(args.source, base.rtsp_url)
+        config = replace(
+            base,
+            detector="fixed-roi",
+            label_roi=args.roi or base.label_roi,
+            camera_rotate_degrees=(
+                base.camera_rotate_degrees
+                if args.rotate_deg is None
+                else args.rotate_deg
+            ),
+        )
+        config.validate_phase2_station()
+        spool = build_local_spool(config)
+        preparer = build_station_preparer(config)
+        store = MinioArtifactStore.connect(
+            endpoint=config.minio_endpoint,
+            access_key=config.minio_access_key,
+            secret_key=config.minio_secret_key,
+            secure=config.minio_secure,
+        )
+        store.validate_bucket(config.artifact_bucket)
+    except Exception as exc:  # noqa: BLE001 - process boundary emits a safe code
+        print(
+            json.dumps(
+                {
+                    "status": "ERROR",
+                    "stage": "SETUP",
+                    "code": type(exc).__name__.upper(),
+                },
+                separators=(",", ":"),
+            )
+        )
+        return 1
+
+    frame_buffer = FrameBuffer(
+        max_size=config.buffer_size,
+        window_ms=config.buffer_window_ms,
+    )
+    camera = RTSPCamera(
+        source,
+        open_timeout_ms=config.rtsp_open_timeout_ms,
+        read_timeout_ms=config.rtsp_read_timeout_ms,
+        max_frame_age_ms=config.max_frame_age_ms,
+    )
+    acquisition = CameraAcquisition(camera, frame_buffer)
+    normalized_profile = config.extraction_profile.strip().lower().replace("-", "_")
+    profile_version = (
+        DGX_SPARK_PROFILE_VERSION
+        if normalized_profile in {"dgx_spark", "dgx_spark_label"}
+        else "1.0"
+    )
+    requested_profile = (
+        "dgx_spark_label"
+        if normalized_profile in {"dgx_spark", "dgx_spark_label"}
+        else "default"
+    )
+    controller = StationController(
+        frame_buffer=frame_buffer,
+        preparer=preparer,
+        spool=spool,
+        station_id=config.station_id,
+        camera_id=config.camera_id,
+        provenance={
+            "requested_profile": {
+                "name": requested_profile,
+                "version": profile_version,
+            },
+            "producer": {
+                "semantic_blockers": (
+                    DGX_SPARK_SEMANTIC_BLOCKERS
+                    if normalized_profile in {"dgx_spark", "dgx_spark_label"}
+                    else {}
+                ),
+                "mapping_summary": (
+                    DGX_SPARK_MAPPING_SUMMARY
+                    if normalized_profile in {"dgx_spark", "dgx_spark_label"}
+                    else {}
+                ),
+                "locator_version": "fixed-roi.v1",
+            },
+        },
+    )
+    pump = DeliveryPump(
+        dispatcher=OutboxDispatcher(spool=spool, store=store),
+        publisher_factory=_publisher_factory(config, spool),
+        interval_s=config.dispatch_interval_s,
+        lifecycle_logger=StructuredLifecycleLogger(),
+    )
+    service = StationService(
+        acquisition=acquisition,
+        frame_buffer=frame_buffer,
+        controller=controller,
+        delivery_pump=pump,
+    )
+
+    completed = 0
+    service.start()
+    try:
+        if not service.wait_ready(timeout_s=args.connect_timeout_s):
+            print('{"status":"ERROR","stage":"CAMERA","code":"NOT_READY"}')
+            return 1
+        print(
+            json.dumps(
+                {
+                    "status": "SYSTEM_READY",
+                    "station_id": config.station_id,
+                    "camera_id": config.camera_id,
+                    "spool_root": str(spool.root),
+                },
+                separators=(",", ":"),
+            )
+        )
+        while args.triggers == 0 or completed < args.triggers:
+            input("ENTER to inspect (Ctrl-C to stop): ")
+            try:
+                report = service.trigger()
+            except SpoolCapacityError as exc:
+                print(
+                    json.dumps(
+                        {
+                            "status": "TRIGGER_REJECTED",
+                            "code": exc.code,
+                            "retryable": exc.retryable,
+                        },
+                        separators=(",", ":"),
+                    )
+                )
+                continue
+            except StationTriggerFailure as exc:
+                print(
+                    json.dumps(
+                        {
+                            "status": "LOCAL_COMMIT_ERROR",
+                            "event_id": exc.event_id,
+                            "trigger_id": exc.trigger_id,
+                            "error": exc.error.to_dict(),
+                        },
+                        separators=(",", ":"),
+                    )
+                )
+                continue
+            completed += 1
+            print(
+                json.dumps(
+                    {
+                        "status": "LOCAL_COMMIT",
+                        "event_id": report.event_id,
+                        "trigger_id": report.trigger_id,
+                        "record_type": report.record.record_type.value,
+                        "delivery_status": report.record.state.delivery_status.value,
+                        "spool_write_ms": report.spool_write_ms,
+                        "trigger_to_local_commit_ms": report.trigger_to_local_commit_ms,
+                    },
+                    separators=(",", ":"),
+                )
+            )
+    except (EOFError, KeyboardInterrupt):
+        pass
+    finally:
+        service.stop(
+            timeout_s=max(2.5, config.rtsp_read_timeout_ms / 1000.0 + 0.5)
+        )
+        camera.wait_closed(
+            timeout_s=max(2.5, config.rtsp_read_timeout_ms / 1000.0 + 0.5)
+        )
+    print(
+        json.dumps(
+            {"status": "STOPPED", "triggers_completed": completed},
+            separators=(",", ":"),
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

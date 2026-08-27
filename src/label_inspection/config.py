@@ -170,6 +170,18 @@ class Settings:
     detector_device: str = field(
         default_factory=lambda: os.getenv("VISION_DETECTOR_DEVICE", "cpu")
     )
+    detector_confidence: float = field(
+        default_factory=lambda: _float("VISION_DETECTOR_CONFIDENCE", 0.25)
+    )
+    detector_iou: float = field(
+        default_factory=lambda: _float("VISION_DETECTOR_IOU", 0.45)
+    )
+    detector_image_size: int = field(
+        default_factory=lambda: _int("VISION_DETECTOR_IMGSZ", 640)
+    )
+    detector_max_det: int = field(
+        default_factory=lambda: _int("VISION_DETECTOR_MAX_DET", 10)
+    )
     ocr_device: str = field(default_factory=lambda: os.getenv("VISION_OCR_DEVICE", "cpu"))
     ocr_engine: str = field(default_factory=lambda: os.getenv("VISION_OCR_ENGINE", "ppocr"))
     ocr_backend: str = field(
@@ -309,6 +321,8 @@ class Settings:
             ("VISION_SCORE_WEIGHT_FRESHNESS", self.score_weight_freshness),
             ("VISION_SCORE_WEIGHT_GLARE", self.score_weight_glare),
             ("VISION_SCORE_WEIGHT_VALIDITY", self.score_weight_validity),
+            ("VISION_DETECTOR_CONFIDENCE", self.detector_confidence),
+            ("VISION_DETECTOR_IOU", self.detector_iou),
         ):
             _require_finite(name, value)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.station_id):
@@ -346,6 +360,22 @@ class Settings:
             from .detection.fixed_roi import FixedROIDetector
 
             FixedROIDetector.parse_roi(self.label_roi)
+        if not 0 <= self.detector_confidence <= 1:
+            raise ValueError("VISION_DETECTOR_CONFIDENCE must be between 0 and 1")
+        if not 0 <= self.detector_iou <= 1:
+            raise ValueError("VISION_DETECTOR_IOU must be between 0 and 1")
+        if (
+            isinstance(self.detector_image_size, bool)
+            or not isinstance(self.detector_image_size, int)
+            or self.detector_image_size < 1
+        ):
+            raise ValueError("VISION_DETECTOR_IMGSZ must be a positive integer")
+        if (
+            isinstance(self.detector_max_det, bool)
+            or not isinstance(self.detector_max_det, int)
+            or not 1 <= self.detector_max_det <= 1000
+        ):
+            raise ValueError("VISION_DETECTOR_MAX_DET must be between 1 and 1000")
         ratios = (
             self.quality_max_underexposed_ratio,
             self.quality_max_overexposed_ratio,

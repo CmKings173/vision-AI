@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from time import perf_counter
-from typing import Iterator
-
 
 TIMING_KEYS = (
     "frame_selection_ms",
@@ -15,6 +14,7 @@ TIMING_KEYS = (
     "candidate_ranking_ms",
     "ocr_ms",
     "barcode_ms",
+    "parallel_inference_ms",
     "field_extraction_ms",
     "validation_ms",
     "total_ms",

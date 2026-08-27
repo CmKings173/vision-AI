@@ -152,6 +152,7 @@ class StationPreparer:
         self.camera_id = camera_id
         self.rotate_degrees = rotate_degrees
         self.bbox_padding_ratio = bbox_padding_ratio
+        self.last_debug: dict[str, object] = {}
 
     def prepare_trigger(
         self,
@@ -194,6 +195,17 @@ class StationPreparer:
                 now=now_wall,
                 monotonic_now=now_monotonic,
             )
+        self.last_debug = {
+            "event_id": event_id,
+            "detector": getattr(self.detector, "name", type(self.detector).__name__),
+            "support_level": getattr(self.detector, "support_level", "UNKNOWN"),
+            "selected_frame_ids": [packet.frame_id for packet in selected],
+            "detector_input_frame_ids": [packet.frame_id for packet in selected],
+            "selected_frames": [_packet_debug(packet) for packet in selected],
+            "detector_runtime": _detector_runtime_metadata(self.detector),
+            "detector_attempts": [],
+            "accepted_candidates": [],
+        }
 
         if not selected:
             if packet_list:
@@ -229,8 +241,17 @@ class StationPreparer:
                         packet.frame, frame_id=packet.frame_id
                     )
                 except Exception:  # noqa: BLE001 - detector plugin boundary
+                    self.last_debug["detector_attempts"].append(  # type: ignore[index]
+                        _detector_attempt(self.detector, packet.frame_id)
+                    )
                     detection_failed = True
                     continue
+            self.last_debug["detector_attempts"].append(  # type: ignore[index]
+                _detector_attempt(self.detector, packet.frame_id, candidates)
+            )
+            self.last_debug["accepted_candidates"].extend(  # type: ignore[union-attr]
+                candidate.to_dict() for candidate in candidates
+            )
             frame_width, frame_height = frame_size(packet.frame)
             for candidate in candidates:
                 try:
@@ -475,6 +496,45 @@ def _copy_image(image: object) -> object:
     if callable(copy_method):
         return copy_method()
     return image
+
+
+def _packet_debug(packet: FramePacket) -> dict[str, object]:
+    shape = getattr(packet.frame, "shape", None)
+    return {
+        "frame_id": packet.frame_id,
+        "captured_at": packet.captured_at,
+        "captured_monotonic": packet.captured_monotonic,
+        "shape": list(shape) if shape is not None else None,
+    }
+
+
+def _detector_runtime_metadata(detector: LabelDetector) -> dict[str, object]:
+    metadata = getattr(detector, "runtime_metadata", None)
+    if isinstance(metadata, dict):
+        return dict(metadata)
+    return {
+        "name": getattr(detector, "name", type(detector).__name__),
+        "support_level": getattr(detector, "support_level", "UNKNOWN"),
+    }
+
+
+def _detector_attempt(
+    detector: LabelDetector,
+    frame_id: int,
+    candidates: list[LabelCandidate] | None = None,
+) -> dict[str, object]:
+    debug = getattr(detector, "last_debug", None)
+    if isinstance(debug, dict):
+        return dict(debug)
+    return {
+        "event_frame_id": frame_id,
+        "state": "SUCCESS" if candidates is not None else "FAILED",
+        "raw_detection_count": len(candidates or []),
+        "accepted_detection_count": len(candidates or []),
+        "raw_detections": [candidate.to_dict() for candidate in candidates or []],
+        "accepted_detections": [candidate.to_dict() for candidate in candidates or []],
+        "inference_ms": None,
+    }
 
 
 def _elapsed_ms(started: float) -> float:

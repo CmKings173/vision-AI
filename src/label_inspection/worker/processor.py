@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from ..barcode.base import BarcodeDecoder, NullBarcodeDecoder
 from ..extraction.fields import FieldExtractor
@@ -38,32 +39,25 @@ class InspectionProcessor:
         timing = new_timing()
         timing.update(prepared.timing)
 
-        with timed(timing, "ocr_ms"):
-            try:
-                raw_ocr = self.ocr.recognize(prepared.label_crop)
-            except Exception:  # noqa: BLE001 - OCR runtime plugin boundary
-                raw_ocr = RawOCRResult(
-                    engine=getattr(self.ocr, "engine", "ppocr"),
-                    success=False,
-                    error="OCR_RUNTIME_ERROR",
-                    error_code="OCR_RUNTIME_ERROR",
-                    error_message="OCR inference failed.",
-                )
+        with ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="barcode-stage",
+        ) as executor:
+            parallel_started = time.perf_counter()
+            barcode_future = executor.submit(
+                _run_barcode,
+                self.barcode,
+                prepared.label_crop,
+            )
+            raw_ocr, ocr_ms = _run_ocr(self.ocr, prepared.label_crop)
+            decoded_barcodes, barcode_result, barcode_ms = barcode_future.result()
+            parallel_inference_ms = (
+                time.perf_counter() - parallel_started
+            ) * 1000.0
 
-        decoded_barcodes: list[BarcodeResult] = []
-        with timed(timing, "barcode_ms"):
-            try:
-                decoded_barcodes = self.barcode.decode(prepared.label_crop)
-                barcode_result = _choose_barcode(decoded_barcodes)
-            except Exception:  # noqa: BLE001 - barcode runtime plugin boundary
-                barcode_result = BarcodeResult(
-                    value=None,
-                    success=False,
-                    error="BARCODE_RUNTIME_ERROR",
-                    error_code="BARCODE_RUNTIME_ERROR",
-                    error_message="Barcode decoding failed.",
-                )
-                decoded_barcodes = [barcode_result]
+        timing["ocr_ms"] = ocr_ms
+        timing["barcode_ms"] = barcode_ms
+        timing["parallel_inference_ms"] = parallel_inference_ms
 
         with timed(timing, "field_extraction_ms"):
             extracted = self.extractor.extract(raw_ocr.lines, source=raw_ocr.engine)
@@ -102,4 +96,43 @@ def _choose_barcode(results: list[BarcodeResult]) -> BarcodeResult:
     return max(
         results,
         key=lambda item: (bool(item.value), bool(item.valid), item.confidence or 0.0),
+    )
+
+
+def _run_ocr(ocr: OCRProvider, image) -> tuple[RawOCRResult, float]:
+    started = time.perf_counter()
+    try:
+        result = ocr.recognize(image)
+    except Exception:  # noqa: BLE001 - OCR runtime plugin boundary
+        result = RawOCRResult(
+            engine=getattr(ocr, "engine", "ppocr"),
+            success=False,
+            error="OCR_RUNTIME_ERROR",
+            error_code="OCR_RUNTIME_ERROR",
+            error_message="OCR inference failed.",
+        )
+    return result, (time.perf_counter() - started) * 1000.0
+
+
+def _run_barcode(
+    barcode: BarcodeDecoder,
+    image,
+) -> tuple[list[BarcodeResult], BarcodeResult, float]:
+    started = time.perf_counter()
+    try:
+        decoded_barcodes = barcode.decode(image)
+        barcode_result = _choose_barcode(decoded_barcodes)
+    except Exception:  # noqa: BLE001 - barcode runtime plugin boundary
+        barcode_result = BarcodeResult(
+            value=None,
+            success=False,
+            error="BARCODE_RUNTIME_ERROR",
+            error_code="BARCODE_RUNTIME_ERROR",
+            error_message="Barcode decoding failed.",
+        )
+        decoded_barcodes = [barcode_result]
+    return (
+        decoded_barcodes,
+        barcode_result,
+        (time.perf_counter() - started) * 1000.0,
     )

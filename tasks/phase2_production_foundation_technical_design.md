@@ -370,7 +370,9 @@ config → MinIO → load PP-OCRv6 once → initialize ZXing
 → OCR warmup → RabbitMQ connection → WORKER READY → consume
 ```
 
-Worker does not report ready until model and dependencies are usable. Per job, OCR and ZXing remain sequential.
+Worker does not report ready until model and dependencies are usable. Per job,
+OCR stays on the caller/warmup thread while ZXing runs on one background worker;
+extraction and validation wait for both results.
 
 Hard invariant:
 

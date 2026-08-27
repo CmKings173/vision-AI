@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from ..schemas import LabelCandidate, LabelCandidateScore, QualityReport
+from ..schemas import (
+    InspectionResult,
+    LabelCandidate,
+    LabelCandidateScore,
+    QualityReport,
+)
 
 
 @dataclass(frozen=True)
@@ -40,3 +46,21 @@ class PreparedInspection:
         if self.orientation_degrees not in {0, 90, 180, 270}:
             raise ValueError("orientation_degrees must be a quarter turn")
         object.__setattr__(self, "timing", MappingProxyType(dict(self.timing)))
+
+
+@dataclass(frozen=True)
+class InspectionExecution:
+    """Non-serialized local execution context for exact debug evidence."""
+
+    result: InspectionResult
+    prepared: PreparedInspection | None
+    label_crop_snapshot: object | None
+
+
+def snapshot_image(image: object) -> object:
+    """Copy image pixels before inference without imposing a NumPy dependency."""
+
+    copy_method = getattr(image, "copy", None)
+    if callable(copy_method):
+        return copy_method()
+    return deepcopy(image)

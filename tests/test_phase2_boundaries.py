@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from label_inspection.contracts import (
 )
 from label_inspection.detection.fixed_roi import FixedROIDetector
 from label_inspection.extraction.fields import FieldExtractor
+from label_inspection.pipeline.inspection import InspectionPipeline
 from label_inspection.pipeline.ranking import CandidateScorer
 from label_inspection.preprocessing.quality import QualityChecker
 from label_inspection.schemas import BarcodeResult, FramePacket, OCRLine, RawOCRResult
@@ -95,6 +97,19 @@ def test_station_preparation_owns_orientation_fixed_roi_and_exact_crop_pixels():
     assert prepared.source_timestamp_ms is None
 
 
+def test_station_preparation_exposes_selected_detector_inputs_and_attempts():
+    preparer = _preparer(detector=FixedROIDetector((0.1, 0.1, 0.9, 0.9)))
+    packet = _packet(sharp_label(), frame_id=12)
+
+    outcome = preparer.prepare_trigger([packet], trigger=_trigger())
+
+    assert outcome.prepared is not None
+    assert preparer.last_debug["selected_frame_ids"] == [12]
+    assert preparer.last_debug["detector_input_frame_ids"] == [12]
+    assert preparer.last_debug["detector_attempts"][0]["event_frame_id"] == 12
+    assert preparer.last_debug["accepted_candidates"][0]["frame_id"] == 12
+
+
 class IdentityOCR:
     engine = "fake-ppocr"
 
@@ -118,6 +133,74 @@ class IdentityBarcode:
         return [BarcodeResult(value="DM-001", format="DataMatrix", valid=True)]
 
 
+class ConcurrentInferenceProbe:
+    def __init__(self) -> None:
+        self.barrier = threading.Barrier(2, timeout=0.5)
+        self.lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+
+    def enter(self) -> None:
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            self.barrier.wait()
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
+class ConcurrentOCR:
+    engine = "fake-ppocr"
+
+    def __init__(self, probe: ConcurrentInferenceProbe):
+        self.probe = probe
+        self.thread_id = None
+
+    def recognize(self, image):
+        self.thread_id = threading.get_ident()
+        self.probe.enter()
+        return RawOCRResult(
+            engine=self.engine,
+            lines=[OCRLine(text="SKU: ABC123", confidence=0.99)],
+        )
+
+
+class ConcurrentBarcode:
+    def __init__(self, probe: ConcurrentInferenceProbe):
+        self.probe = probe
+
+    def decode(self, image):
+        self.probe.enter()
+        return [BarcodeResult(value="DM-001", format="DataMatrix", valid=True)]
+
+
+def test_worker_processor_runs_ocr_and_barcode_concurrently():
+    outcome = _preparer().prepare_trigger([_packet(sharp_label())], trigger=_trigger())
+    assert outcome.prepared is not None
+    probe = ConcurrentInferenceProbe()
+    ocr = ConcurrentOCR(probe)
+    caller_thread_id = threading.get_ident()
+    processor = InspectionProcessor(
+        ocr=ocr,
+        barcode=ConcurrentBarcode(probe),
+        extractor=FieldExtractor(fields=("sku",)),
+        validator=LabelValidator(required_fields=("sku",)),
+    )
+
+    result = processor.process(outcome.prepared)
+
+    assert probe.max_active == 2
+    assert ocr.thread_id == caller_thread_id
+    assert result.timing["parallel_inference_ms"] >= max(
+        result.timing["ocr_ms"], result.timing["barcode_ms"]
+    )
+    assert result.raw_ocr.success is True
+    assert result.barcode.value == "DM-001"
+    assert result.extracted["sku"].value == "ABC123"
+
+
 def test_worker_processor_consumes_the_exact_prepared_crop_without_reconstruction():
     outcome = _preparer().prepare_trigger([_packet(sharp_label())], trigger=_trigger())
     assert outcome.prepared is not None
@@ -136,6 +219,29 @@ def test_worker_processor_consumes_the_exact_prepared_crop_without_reconstructio
     assert barcode.image is outcome.prepared.label_crop
     assert result.event_id == outcome.prepared.event_id
     assert result.extracted["sku"].value == "ABC123"
+
+
+def test_pipeline_execution_exposes_pre_inference_crop_snapshot():
+    ocr = IdentityOCR()
+    barcode = IdentityBarcode()
+    pipeline = InspectionPipeline(
+        preparer=_preparer(),
+        processor=InspectionProcessor(
+            ocr=ocr,
+            barcode=barcode,
+            extractor=FieldExtractor(fields=("sku",)),
+            validator=LabelValidator(required_fields=("sku",)),
+        ),
+    )
+
+    execution = pipeline.execute_packets([_packet(sharp_label())])
+
+    assert execution.prepared is not None
+    assert execution.label_crop_snapshot is not None
+    assert execution.label_crop_snapshot is not ocr.image
+    assert np.array_equal(execution.label_crop_snapshot, ocr.image)
+    assert ocr.image is execution.prepared.label_crop
+    assert barcode.image is execution.prepared.label_crop
 
 
 def test_quality_rejection_is_terminal_and_never_requires_worker_inference():

@@ -30,7 +30,7 @@ def build_station_preparer(config: Settings = settings) -> StationPreparer:
     )
 
 
-def build_local_spool(config: Settings = settings) -> "LocalSpool":
+def build_local_spool(config: Settings = settings) -> LocalSpool:
     """Build the station-owned durable outbox without inference dependencies."""
 
     config.validate_station()
@@ -47,7 +47,7 @@ def build_local_spool(config: Settings = settings) -> "LocalSpool":
     )
 
 
-def build_processor(config: Settings = settings) -> "InspectionProcessor":
+def build_processor(config: Settings = settings) -> InspectionProcessor:
     """Build worker-owned OCR/barcode/business processing components."""
 
     config.validate_worker()
@@ -106,7 +106,7 @@ def build_processor(config: Settings = settings) -> "InspectionProcessor":
     )
 
 
-def build_pipeline(config: Settings = settings) -> "InspectionPipeline":
+def build_pipeline(config: Settings = settings) -> InspectionPipeline:
     """Build the existing local synchronous compatibility façade."""
 
     config.validate()
@@ -145,6 +145,10 @@ def _build_station_preparer(
         detector = UltralyticsLabelDetector(
             config.detector_model,
             device=config.detector_device,
+            confidence=config.detector_confidence,
+            iou=config.detector_iou,
+            image_size=config.detector_image_size,
+            max_det=config.detector_max_det,
         )
     else:
         raise ValueError(f"unsupported detector: {config.detector}")

@@ -9,6 +9,7 @@ import pytest
 from label_inspection.camera.frame_buffer import FrameBuffer
 from label_inspection.camera.selector import FrameSelector
 from label_inspection.contracts import DeliveryStatus, ProcessingStatus
+from label_inspection.detection.contour import ContourDetector
 from label_inspection.detection.fixed_roi import FixedROIDetector
 from label_inspection.pipeline.ranking import CandidateScorer
 from label_inspection.preprocessing.quality import QualityChecker
@@ -138,6 +139,120 @@ def test_station_entrypoint_does_not_require_minio_probe_before_camera_start():
     setup_before_frame_buffer = source.split("frame_buffer = FrameBuffer", 1)[0]
 
     assert "store.ensure_bucket" not in setup_before_frame_buffer
+
+
+def test_station_cli_config_can_select_trained_yolo_detector(tmp_path):
+    from scripts import run_station
+
+    base = _phase2_station_config(tmp_path)
+    args = SimpleNamespace(
+        detector="yolo",
+        detector_model="/models/shipping_label_best.pt",
+        detector_device="gpu:0",
+        roi=None,
+        rotate_deg=None,
+    )
+
+    config = run_station._station_config(base, args)
+
+    assert config.detector == "yolo"
+    assert config.detector_model == "/models/shipping_label_best.pt"
+    assert config.detector_device == "gpu:0"
+    assert config.label_roi == base.label_roi
+
+
+def test_station_composition_records_actual_yolo_locator_provenance(
+    tmp_path, monkeypatch
+):
+    from scripts import run_station
+
+    class _YoloDetector:
+        name = "Ultralytics"
+        support_level = "EXPERIMENTAL"
+
+        def __init__(self):
+            self.runtime_metadata = {
+                "model_path": "/private/models/best.pt",
+                "model_name": "best",
+                "model_version": "unknown",
+                "model_sha256": "a" * 64,
+                "configured_device": "cuda:0",
+                "actual_device": "cuda:0",
+                "confidence": 0.25,
+                "iou": 0.45,
+                "imgsz": 640,
+                "max_det": 10,
+                "class_mapping": {"0": "shipping_label"},
+                "expected_class": "shipping_label",
+            }
+
+    config = replace(
+        _phase2_station_config(tmp_path),
+        detector="yolo",
+        detector_model="/private/models/best.pt",
+        detector_device="cuda:0",
+    )
+    monkeypatch.setattr(
+        run_station,
+        "build_station_preparer",
+        lambda _config: SimpleNamespace(detector=_YoloDetector()),
+    )
+
+    runtime = run_station.build_station_runtime(config, "rtsp://camera")
+    producer = runtime.service.controller.provenance["producer"]
+
+    assert producer["locator_version"] == "ultralytics-yolo.v1"
+    assert producer["locator"] == {
+        "type": "ultralytics_yolo",
+        "version": "ultralytics-yolo.v1",
+        "support_level": "EXPERIMENTAL",
+        "model_name": "best",
+        "model_version": "unknown",
+        "model_sha256": "a" * 64,
+        "configured_device": "cuda:0",
+        "actual_device": "cuda:0",
+        "confidence": 0.25,
+        "iou": 0.45,
+        "imgsz": 640,
+        "max_det": 10,
+        "class_mapping": {"0": "shipping_label"},
+        "expected_class": "shipping_label",
+    }
+    assert "model_path" not in producer["locator"]
+
+
+def test_station_detector_provenance_records_normalized_fixed_roi():
+    from scripts import run_station
+
+    provenance = run_station._detector_provenance(
+        FixedROIDetector((0.1, 0.2, 0.9, 0.8), confidence=0.95)
+    )
+
+    assert provenance == {
+        "type": "fixed_roi",
+        "version": "fixed-roi.v1",
+        "support_level": "SUPPORTED",
+        "roi": [0.1, 0.2, 0.9, 0.8],
+        "normalized": True,
+        "confidence": 0.95,
+    }
+
+
+def test_station_detector_provenance_preserves_supported_contour_config():
+    from scripts import run_station
+
+    provenance = run_station._detector_provenance(
+        ContourDetector(min_area_ratio=0.03, max_candidates=7, threshold=120)
+    )
+
+    assert provenance == {
+        "type": "contour",
+        "version": "contour.v1",
+        "support_level": "EXPERIMENTAL",
+        "min_area_ratio": 0.03,
+        "max_candidates": 7,
+        "threshold": 120,
+    }
 
 
 @pytest.mark.parametrize("minio_failure", ["connect", "validate"])

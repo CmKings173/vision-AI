@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -100,6 +101,7 @@ def build_station_runtime(config: Settings, source: str) -> StationRuntime:
         if normalized_profile in {"dgx_spark", "dgx_spark_label"}
         else "default"
     )
+    locator = _detector_provenance(preparer.detector)
     controller = StationController(
         frame_buffer=frame_buffer,
         preparer=preparer,
@@ -122,7 +124,8 @@ def build_station_runtime(config: Settings, source: str) -> StationRuntime:
                     if normalized_profile in {"dgx_spark", "dgx_spark_label"}
                     else {}
                 ),
-                "locator_version": "fixed-roi.v1",
+                "locator_version": locator["version"],
+                "locator": locator,
             },
         },
     )
@@ -144,6 +147,62 @@ def build_station_runtime(config: Settings, source: str) -> StationRuntime:
         spool=spool,
         delivery_pump=delivery_pump,
     )
+
+
+def _detector_provenance(detector) -> dict[str, object]:
+    """Describe the active locator without leaking host-specific model paths."""
+
+    name = str(getattr(detector, "name", type(detector).__name__))
+    support_level = str(getattr(detector, "support_level", "UNKNOWN"))
+    normalized_name = name.strip().lower().replace("-", "").replace("_", "")
+    if normalized_name == "fixedroi":
+        return {
+            "type": "fixed_roi",
+            "version": "fixed-roi.v1",
+            "support_level": support_level,
+            "roi": [float(value) for value in detector.roi],
+            "normalized": bool(detector.normalized),
+            "confidence": float(detector.confidence),
+        }
+    if normalized_name == "contour":
+        return {
+            "type": "contour",
+            "version": "contour.v1",
+            "support_level": support_level,
+            "min_area_ratio": float(detector.min_area_ratio),
+            "max_candidates": int(detector.max_candidates),
+            "threshold": int(detector.threshold),
+        }
+
+    metadata = getattr(detector, "runtime_metadata", {})
+    if not isinstance(metadata, Mapping):
+        raise TypeError("detector runtime_metadata must be a mapping")
+    if normalized_name == "ultralytics" or "model_sha256" in metadata:
+        stable_keys = (
+            "model_name",
+            "model_version",
+            "model_sha256",
+            "configured_device",
+            "actual_device",
+            "ultralytics_version",
+            "torch_version",
+            "cuda_version",
+            "actual_cuda_device_name",
+            "confidence",
+            "iou",
+            "imgsz",
+            "max_det",
+            "class_mapping",
+            "expected_class",
+        )
+        return {
+            "type": "ultralytics_yolo",
+            "version": "ultralytics-yolo.v1",
+            "support_level": support_level,
+            **{key: metadata[key] for key in stable_keys if key in metadata},
+        }
+
+    raise ValueError(f"unsupported station detector provenance: {name}")
 
 
 def _publisher_factory(config: Settings, spool):
@@ -182,10 +241,58 @@ def _publisher_factory(config: Settings, spool):
     return create
 
 
+def _station_config(base: Settings, args: argparse.Namespace) -> Settings:
+    """Apply station CLI overrides without forcing a detector choice."""
+
+    return replace(
+        base,
+        detector=args.detector or base.detector,
+        detector_model=args.detector_model or base.detector_model,
+        detector_device=args.detector_device or base.detector_device,
+        detector_confidence=(
+            base.detector_confidence
+            if getattr(args, "detector_confidence", None) is None
+            else args.detector_confidence
+        ),
+        detector_iou=(
+            base.detector_iou
+            if getattr(args, "detector_iou", None) is None
+            else args.detector_iou
+        ),
+        detector_image_size=(
+            base.detector_image_size
+            if getattr(args, "detector_imgsz", None) is None
+            else args.detector_imgsz
+        ),
+        detector_max_det=(
+            base.detector_max_det
+            if getattr(args, "detector_max_det", None) is None
+            else args.detector_max_det
+        ),
+        label_roi=args.roi or base.label_roi,
+        camera_rotate_degrees=(
+            base.camera_rotate_degrees
+            if args.rotate_deg is None
+            else args.rotate_deg
+        ),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 2 persistent station service")
     parser.add_argument("--source", help="Direct RTSP/HTTP camera URL")
     parser.add_argument("--roi", help="Normalized FixedROI x1,y1,x2,y2")
+    parser.add_argument(
+        "--detector",
+        choices=("fixed-roi", "yolo", "ultralytics"),
+        help="Detector override; defaults to VISION_DETECTOR",
+    )
+    parser.add_argument("--detector-model", help="YOLO model path")
+    parser.add_argument("--detector-device", help="YOLO device, e.g. cuda:0")
+    parser.add_argument("--detector-confidence", type=float)
+    parser.add_argument("--detector-iou", type=float)
+    parser.add_argument("--detector-imgsz", type=int)
+    parser.add_argument("--detector-max-det", type=int)
     parser.add_argument("--rotate-deg", type=int)
     parser.add_argument(
         "--triggers",
@@ -202,16 +309,7 @@ def main() -> int:
     base = Settings()
     try:
         source = resolve_camera_source(args.source, base.rtsp_url)
-        config = replace(
-            base,
-            detector="fixed-roi",
-            label_roi=args.roi or base.label_roi,
-            camera_rotate_degrees=(
-                base.camera_rotate_degrees
-                if args.rotate_deg is None
-                else args.rotate_deg
-            ),
-        )
+        config = _station_config(base, args)
         config.validate_phase2_station()
         runtime = build_station_runtime(config, source)
     except Exception as exc:  # noqa: BLE001 - process boundary emits a safe code

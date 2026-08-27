@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from label_inspection.detection.fixed_roi import FixedROIDetector
 from label_inspection.detection.contour import ContourDetector, _geometric_confidence
+from label_inspection.detection.fixed_roi import FixedROIDetector
 from label_inspection.detection.ultralytics_detector import UltralyticsLabelDetector
 
 
@@ -47,7 +47,7 @@ def test_fixed_roi_clamps_partial_overlap_and_errors_when_fully_outside():
 def test_detector_support_scope_is_explicit_for_gx10_v1():
     assert FixedROIDetector.support_level == "SUPPORTED"
     assert ContourDetector.support_level == "EXPERIMENTAL"
-    assert UltralyticsLabelDetector.support_level == "DEFERRED"
+    assert UltralyticsLabelDetector.support_level == "EXPERIMENTAL"
 
 
 def test_contour_confidence_is_shape_based_not_frame_or_candidate_area():

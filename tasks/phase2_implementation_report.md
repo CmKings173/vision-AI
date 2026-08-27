@@ -19,6 +19,12 @@ This report covers checkpoints 2C through 2F. Checkpoints 2A and 2B retain
 their dedicated reports. `tasks/phase2_production_foundation_technical_design.md`
 remains the architecture authority.
 
+The Phase 2 delivery infrastructure is now defined in
+`infra/phase2/docker-compose.yml`: MinIO, idempotent bucket/app-user bootstrap,
+and RabbitMQ run with persistent volumes while station and worker remain native
+GX10 processes. Compose parsing is locally verified; container startup and real
+service behavior remain runtime gates.
+
 ## Delivered architecture
 
 ```text
@@ -76,7 +82,8 @@ the ring buffer, FixedROI, or crop reconstruction.
 - Persistent station service runs independent camera and delivery threads.
   Trigger completion means atomic local durability, not network delivery.
 - `scripts/run_station.py` is the station entrypoint and records exact
-  extraction profile/version/mapping provenance.
+  extraction profile/version/mapping provenance plus the actual FixedROI or
+  YOLO locator version/config/model SHA-256.
 
 ## 2E - Resident worker
 
@@ -91,8 +98,8 @@ the ring buffer, FixedROI, or crop reconstruction.
   FixedROI or crop.
 - Existing valid `inspection-result.v1` with matching event/trigger/station/
   camera identity skips inference and is ACK-safe.
-- OCR and ZXing remain sequential. Existing extraction/validation behavior is
-  preserved.
+- OCR runs inline on its caller/warmup thread while ZXing runs on one background
+  worker. They overlap, then extraction/validation waits for both results.
 - Durable result contains raw OCR, extracted fields, barcode evidence,
   validation, quality, semantic provenance and stage timings.
 - ACK occurs only after result create/read/checksum verification.

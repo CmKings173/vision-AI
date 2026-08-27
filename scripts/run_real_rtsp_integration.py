@@ -37,6 +37,20 @@ def main() -> int:
     parser.add_argument("--timeout-s", type=float, default=15.0)
     parser.add_argument("--roi", default="0,0,1,1")
     parser.add_argument("--roi-absolute", action="store_true")
+    parser.add_argument(
+        "--detector",
+        choices=("fixed-roi", "yolo", "ultralytics"),
+        default="fixed-roi",
+    )
+    parser.add_argument("--detector-model")
+    parser.add_argument(
+        "--detector-device",
+        help="YOLO device; defaults to --device when --detector=yolo",
+    )
+    parser.add_argument("--detector-confidence", type=float)
+    parser.add_argument("--detector-iou", type=float)
+    parser.add_argument("--detector-imgsz", type=int)
+    parser.add_argument("--detector-max-det", type=int)
     parser.add_argument("--device", default="gpu:0")
     parser.add_argument("--required-fields", default="tracking_number,order_id")
     args = parser.parse_args()
@@ -53,7 +67,28 @@ def main() -> int:
     config = replace(
         settings,
         camera_id=args.camera_id or settings.camera_id,
-        detector="fixed-roi",
+        detector=args.detector,
+        detector_model=args.detector_model or settings.detector_model,
+        detector_device=(
+            args.detector_device
+            or (args.device if args.detector in {"yolo", "ultralytics"} else settings.detector_device)
+        ),
+        detector_confidence=(
+            settings.detector_confidence
+            if args.detector_confidence is None
+            else args.detector_confidence
+        ),
+        detector_iou=settings.detector_iou if args.detector_iou is None else args.detector_iou,
+        detector_image_size=(
+            settings.detector_image_size
+            if args.detector_imgsz is None
+            else args.detector_imgsz
+        ),
+        detector_max_det=(
+            settings.detector_max_det
+            if args.detector_max_det is None
+            else args.detector_max_det
+        ),
         label_roi=args.roi,
         roi_normalized=not args.roi_absolute,
         ocr_engine="ppocr_v6",

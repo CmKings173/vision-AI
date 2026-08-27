@@ -35,13 +35,21 @@ Android IP Camera
   -> deterministic FixedROI
   -> crop / optional rectify / quality gate
   -> candidate ranking
-  -> PP-OCRv6 DET+REC       (sequential with barcode today)
-  -> ZXing DataMatrix       (sequential with OCR today)
+  -> PP-OCRv6 DET+REC       (caller/warmup thread)
+  -> ZXing DataMatrix       (background worker, overlaps OCR)
   -> DGX Spark FieldExtractor
   -> LabelValidator
   -> InspectionResult JSON
   -> selected_frame.jpg + label_crop.jpg + result.json
 ```
+
+When `VISION_DETECTOR=yolo` is explicitly selected, the detector stage is
+Ultralytics instead of FixedROI. The adapter is currently `EXPERIMENTAL` and
+runtime acceptance is pending; startup records the exact checkpoint path,
+SHA-256, class schema, configured/actual device, and inference thresholds.
+Every fresh trigger also persists `detector_input.jpg` and
+`detector_debug.json`, including misses, so detector acceptance can be audited
+without treating OCR as having run.
 
 ## 4. End-to-end startup flow
 
@@ -181,11 +189,14 @@ the selected packets, then runs OCR once on the best usable candidate.
 
 ### 6.3 Detection and crop
 
-The active detector is FixedROI. It creates exactly one candidate from the
-configured normalized or absolute coordinates. The candidate is cropped with
-the configured padding ratio. Perspective rectification is available at the
-pipeline boundary, but the FixedROI candidate normally has no corner geometry,
-so the active path is effectively a deterministic crop.
+The default detector is FixedROI. It creates exactly one candidate from the
+configured normalized or absolute coordinates. The trained Ultralytics/YOLO
+adapter is also wired as an explicit opt-in and emits the same
+`LabelCandidate` contract; it requires the detector model and device settings.
+The candidate is cropped with the configured padding ratio. Perspective
+rectification is available at the pipeline boundary, but a FixedROI candidate
+normally has no corner geometry, so that path is effectively a deterministic
+crop.
 
 ### 6.4 Quality gate
 
@@ -214,19 +225,22 @@ quality-passing candidate is sent to OCR and ZXing.
 
 ### 6.6 OCR and barcode execution order
 
-The current implementation is sequential:
+The current implementation overlaps OCR and barcode while preserving the OCR
+runtime's caller-thread affinity:
 
 ```text
 best crop
-  -> PP-OCRv6 recognize()
-  -> ZXing decode()
+  -> submit ZXing decode() to one background worker
+  -> PP-OCRv6 recognize() inline on the caller/warmup thread
+  -> join the ZXing result
   -> field extraction
   -> validation
 ```
 
 OCR and barcode do not share decoded data. ZXing remains an independent barcode
 signal, which is important because a DataMatrix may be readable even when text
-OCR or field extraction is incomplete.
+OCR or field extraction is incomplete. The executor is per inspection, but the
+resident OCR and ZXing objects are reused and are not loaded again.
 
 ### 6.7 Business field extraction
 
@@ -328,13 +342,16 @@ quality_ms
 candidate_ranking_ms
 ocr_ms
 barcode_ms
+parallel_inference_ms
 field_extraction_ms
 validation_ms
 total_ms
 ```
 
 The manual acceptance script additionally records wall time including artifact
-writing and reports p50/p95 after the configured warmup period.
+writing and reports OCR, barcode, parallel-inference, and total-inspection
+p50/p95 after the configured warmup period. Total-inspection metrics include
+all executed inference attempts; PASS-only latency remains a separate view.
 
 Model loading and warmup belong to startup telemetry and must not be used as a
 steady-state OCR latency measurement.
@@ -351,6 +368,8 @@ Each completed event must persist:
 
 The artifact directory is the primary evidence bundle for debugging ROI,
 orientation, OCR lines, field mapping, barcode position, and validation.
+`label_crop.jpg` is encoded from a snapshot of the exact prepared crop object
+passed to OCR/ZXing; the manual script does not reconstruct it from the bbox.
 
 ## 8. Configuration and environment
 
@@ -438,21 +457,17 @@ total inspection p95: 379 ms
 These values describe the tested camera, crop, image quality, device, and
 configuration. They are not a universal production SLA.
 
-Because OCR and barcode are currently sequential, the steady-state critical
-path is approximately:
+Because OCR and barcode overlap, the steady-state critical path is approximately:
 
 ```text
 selection + detection + crop + quality + ranking
-  + OCR
-  + barcode
+  + max(OCR, barcode)
   + extraction + validation
   + artifact write (for total inspection wall time)
 ```
 
-If OCR and ZXing are made concurrent later, the inference portion could move
-from approximately `ocr + barcode` toward `max(ocr, barcode)`, but GPU/CPU
-contention and decoder thread safety must be measured on GX10. Parallelism is
-not automatically an improvement.
+This is the intended wall-time shape, not a measured GX10 speedup claim. Native
+runtime contention and decoder behavior must still be benchmarked on GX10.
 
 ## 11. Traceability, evaluation, and monitoring status
 
@@ -705,18 +720,21 @@ The camera thread and inspection controller are intentionally separated. The
 controller never performs a potentially blocking camera read. It only waits
 for readiness and reads snapshots from the buffer.
 
-The current OCR and barcode stages are **sequential**, not parallel:
+The current OCR and barcode stages overlap, with OCR kept on its caller/warmup
+thread for native GPU runtime safety:
 
 ```text
 best_label_crop
-  -> OCR recognize()
-  -> ZXing decode()
+  -> submit ZXing decode() to one background worker
+  -> OCR recognize() inline on the caller/warmup thread
+  -> join the ZXing result
   -> field extraction
   -> validation
 ```
 
-The same crop is used by both decoders. Parallel OCR/ZXing is a possible future
-optimization, but it has not been implemented or benchmarked.
+The same crop is used by both decoders. This concurrency path is implemented
+and covered by local regression tests, but its native-library behavior and
+speedup are not runtime-verified on GX10 yet.
 
 ### 3.2 Main module map
 
@@ -748,7 +766,7 @@ src/label_inspection/
 ├── detection/
 │   ├── fixed_roi.py          active deterministic detector
 │   ├── contour.py            experimental detector
-│   └── ultralytics_detector.py deferred detector adapter
+│   └── ultralytics_detector.py supported YOLO detector adapter
 ├── preprocessing/
 │   ├── orientation.py
 │   ├── crop.py

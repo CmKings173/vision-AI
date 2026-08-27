@@ -19,20 +19,25 @@ image/video/phone RTSP
 ```
 
 The current implementation keeps optional heavyweight integrations behind
-adapters. GLM-OCR, custom YOLO and Redis Streams remain intentionally deferred.
+adapters. GLM-OCR and Redis Streams remain intentionally deferred; custom YOLO
+is available only as an experimental, explicitly selected detector.
 Top-K does not mean OCR K times: only the highest-ranked crop reaches PP-OCR
 and ZXing in V1.
 
-For GX10 V1 acceptance, `FixedROI` is the only supported detector. `Contour`
-is experimental, and the Ultralytics/custom-YOLO adapter is deferred. The
-Ultralytics licensing/commercial-use decision is a release blocker before any
-commercial deployment.
+For GX10 V1 acceptance, `FixedROI` remains the default deterministic detector.
+The Ultralytics adapter is an `EXPERIMENTAL` explicit opt-in for a trained
+single-class shipping-label model. Its runtime acceptance is pending; a smoke
+run is not production-accuracy evidence. `Contour` remains experimental, and
+the Ultralytics license decision must be completed before commercial deployment.
 
 ## Runtime requirements
 
 - Python `>=3.10,<3.13`; Python 3.11 is recommended for GX10.
 - `VISION_LABEL_ROI=x1,y1,x2,y2` is mandatory in `fixed-roi` mode.
 - `VISION_DETECTOR_DEVICE` and `VISION_OCR_DEVICE` are framework-specific.
+- YOLO runtime defaults are `VISION_DETECTOR_CONFIDENCE=0.25`,
+  `VISION_DETECTOR_IOU=0.45`, `VISION_DETECTOR_IMGSZ=640`, and
+  `VISION_DETECTOR_MAX_DET=10`; the CLI exposes the same four overrides.
 - `VISION_OCR_CONFIDENCE` is a validation threshold: low-confidence lines stay
   in `raw_ocr.lines` and extracted fields, but force `REVIEW` when required.
 - Quality thresholds in `.env.example` are provisional engineering defaults,
@@ -70,23 +75,36 @@ pip install -e '.[ocr,barcode]'
 The OCR group also needs a PaddlePaddle CPU/GPU build compatible with the
 target OS and CUDA runtime.
 
+## Phase 2 local infrastructure
+
+The Phase 2 station/worker flow needs external MinIO and RabbitMQ services.
+The repository now includes a localhost-bound Docker Compose stack with
+persistent volumes and MinIO bucket/app-user bootstrap. Station and worker
+remain native GX10 processes so PP-OCRv6/ZXing use the existing GPU virtual
+environment. See [the Phase 2 infrastructure runbook](tasks/phase2_infrastructure_runbook.md)
+and [the Compose README](infra/phase2/README.md).
+
 ## GX10 real PP-OCRv6 Transformers path (preferred)
 
-The GX10 acceptance path uses the already validated PyTorch CUDA runtime,
-PP-OCRv6 through PaddleOCR's `transformers` engine, FixedROI, and real
-ZXing-C++. Do not install a second Torch build over the GX10 image. Install
-the project adapter dependencies in the existing Python 3.11 environment:
+The GX10 path uses the already validated PyTorch CUDA runtime, PP-OCRv6
+through PaddleOCR's `transformers` engine, the trained YOLO label detector,
+and real ZXing-C++. FixedROI remains available as the deterministic fallback.
+Do not install a second Torch build over the GX10 image. Install the project
+adapter dependencies in the existing Python 3.11 environment:
 
 ```bash
 cd ~/Projects/vision-AI
 source .venv/bin/activate
-python -m pip install -e '.[ocr-transformers,barcode]'
+python -m pip install -e '.[detector,ocr-transformers,barcode]'
 
 export VISION_OCR_ENGINE=ppocr_v6
 export VISION_OCR_BACKEND=transformers
 export VISION_OCR_VERSION=PP-OCRv6
 export VISION_OCR_DEVICE=gpu:0
 export VISION_BARCODE_ENGINE=zxing
+export VISION_DETECTOR=yolo
+export VISION_DETECTOR_MODEL=/home/minh/Projects/training/runs/detect/runs/shipping_label/yolo26s_v2_full_bg/weights/best.pt
+export VISION_DETECTOR_DEVICE=gpu:0
 
 python scripts/check_runtime.py
 python scripts/test_zxing_runtime.py \
@@ -96,16 +114,18 @@ python scripts/test_ppocr_v6.py \
   --device gpu:0 --runs 20
 ```
 
-Run the complete real image path before touching RTSP. The default full-frame
-ROI is still FixedROI; pass the calibrated normalized ROI when `pic.jpg`
-contains background around the label:
+Run the complete real image path before touching RTSP. With YOLO, the model
+finds the label and no calibrated ROI is needed:
 
 ```bash
 python scripts/run_real_image_integration.py \
   --image /home/minh/Projects/vision-AI/test_data/pic.jpg \
-  --roi 0,0,1,1 \
+  --detector yolo \
+  --detector-model "$VISION_DETECTOR_MODEL" \
+  --detector-device gpu:0 \
   --device gpu:0 \
-  --required-fields tracking_number,order_id \
+  --extraction-profile dgx_spark_label \
+  --required-fields customer_part_number,so_number,our_part_number,quantity,net_weight,gross_weight,carton_number \
   --warmup 2 --runs 20
 ```
 
@@ -119,41 +139,48 @@ export VISION_RTSP_URL='rtsp://PHONE_IP:PORT/PATH'
 # Or, for an HTTP/MJPEG endpoint:
 # export VISION_RTSP_URL='http://PHONE_IP:PORT/PATH'
 export OPENCV_FFMPEG_CAPTURE_OPTIONS='rtsp_transport;tcp'
-# Replace these calibration values from the saved selected frame. Full-frame
-# 0,0,1,1 is rejected by this acceptance entrypoint.
-export VISION_LABEL_ROI='LABEL_X1,LABEL_Y1,LABEL_X2,LABEL_Y2'
 export VISION_CAMERA_ROTATE_DEG=0
 python scripts/manual_rtsp_inspection.py \
   --source "$VISION_RTSP_URL" \
-  --roi "$VISION_LABEL_ROI" \
+  --detector yolo \
+  --detector-model "$VISION_DETECTOR_MODEL" \
+  --detector-device gpu:0 \
   --rotate-deg "$VISION_CAMERA_ROTATE_DEG" \
   --device gpu:0 \
   --triggers 10 \
   --debug-dir artifacts/manual_rtsp_inspection
 ```
 
-The command loads and warms PP-OCRv6, imports/prepares ZXing, then connects the
-camera. It prints `SYSTEM READY` only after OCR, ZXing, and a fresh camera frame
-are ready. Each Enter keeps the same process and resident model, snapshots the
-fresh ring-buffer frames, ranks Top-K, normalizes the configured orientation,
-applies the calibrated FixedROI, and runs one PP-OCRv6 + ZXing pass. It repeats
-for 10 triggers and prints p50/p95 after the loop; model load/warmup is excluded
-from `ocr_ms`.
+The command loads and warms YOLO and PP-OCRv6, imports/prepares ZXing, then
+connects the camera. It prints `SYSTEM READY` only after the detector, OCR,
+ZXing, and a fresh camera frame are ready. Each Enter keeps the same process and
+resident models, snapshots the fresh ring-buffer frames, ranks Top-K, normalizes
+the configured orientation, lets YOLO select the label, and runs one PP-OCRv6 +
+ZXing pass. It repeats for 10 triggers and prints p50/p95 after the loop; model
+load/warmup is excluded from per-inspection timings.
+
+The detector acceptance contract, artifact semantics, metric denominators, and
+offline diagnosis command are documented in
+`tasks/yolo_runtime_acceptance.md`.
 
 Each completed event is stored under its event ID:
 
 ```text
 artifacts/manual_rtsp_inspection/<event_id>/
   selected_frame.jpg
-  label_crop.jpg
+  detector_input.jpg
+  detector_debug.json
+  label_crop.jpg            # only when a label candidate is accepted
   result.json
 ```
 
-`selected_frame.jpg` is the oriented frame passed to FixedROI/OCR, and
-`label_crop.jpg` is the crop passed to OCR/ZXing. Use the first saved frame to
-calibrate `VISION_LABEL_ROI` and confirm whether `VISION_CAMERA_ROTATE_DEG`
-must be `90`, `180`, or `270` before the 10-trigger acceptance run. Use a larger
-window when phone Wi-Fi jitter makes the latest frames stale:
+`detector_input.jpg` is an exact full-resolution image passed to YOLO. It is
+saved even for `LABEL_NOT_DETECTED`, together with raw/accepted detection
+metadata and model identity in `detector_debug.json`. `selected_frame.jpg` is
+the event evidence frame; `label_crop.jpg` is written only when a label crop
+exists. Use the saved images to confirm whether `VISION_CAMERA_ROTATE_DEG`
+must be `90`, `180`, or `270` before an acceptance run. Use a larger window
+when phone Wi-Fi jitter makes the latest frames stale:
 
 ```bash
 export VISION_BUFFER_WINDOW_MS=2000
@@ -219,9 +246,9 @@ recognition outputs. It keeps raw OCR lines in the existing result schema;
 FieldExtractor, ZXing, validation, and timing remain unchanged.
 
 Detector and transport dependencies are independent and are not needed for
-the FixedROI + PP-OCR + ZXing vertical slice. Install `.[detector]` only for
-the deferred Ultralytics adapter; `.[transport]` remains unused during the V1
-freeze.
+the FixedROI + PP-OCR + ZXing vertical slice. Install `.[detector]` when
+selecting the trained YOLO adapter; `.[transport]` remains unused during the
+V1 freeze.
 
 ## Test levels
 

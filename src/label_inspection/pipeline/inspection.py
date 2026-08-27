@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 from ..barcode.base import BarcodeDecoder
 from ..camera.selector import FrameSelector
@@ -14,16 +14,17 @@ from ..ocr.base import OCRProvider
 from ..pipeline.ranking import CandidateScorer
 from ..preprocessing.quality import QualityChecker
 from ..schemas import (
+    STAGE_NOT_RUN,
     FramePacket,
     InspectionResult,
     QualityReport,
     RawOCRResult,
-    STAGE_NOT_RUN,
     ValidationResult,
 )
 from ..station.preparation import PreparationOutcome, StationPreparer
 from ..validation.rules import LabelValidator
 from ..worker.processor import InspectionProcessor
+from .types import InspectionExecution, snapshot_image
 
 
 class InspectionPipeline:
@@ -36,20 +37,20 @@ class InspectionPipeline:
     def __init__(
         self,
         *,
-        detector: Optional[LabelDetector] = None,
-        ocr: Optional[OCRProvider] = None,
-        barcode: Optional[BarcodeDecoder] = None,
-        extractor: Optional[FieldExtractor] = None,
-        validator: Optional[LabelValidator] = None,
-        selector: Optional[FrameSelector] = None,
-        quality_checker: Optional[QualityChecker] = None,
-        candidate_scorer: Optional[CandidateScorer] = None,
-        camera_id: Optional[str] = None,
+        detector: LabelDetector | None = None,
+        ocr: OCRProvider | None = None,
+        barcode: BarcodeDecoder | None = None,
+        extractor: FieldExtractor | None = None,
+        validator: LabelValidator | None = None,
+        selector: FrameSelector | None = None,
+        quality_checker: QualityChecker | None = None,
+        candidate_scorer: CandidateScorer | None = None,
+        camera_id: str | None = None,
         station_id: str = "STATION-01",
         rotate_degrees: int = 0,
         bbox_padding_ratio: float = 0.05,
-        preparer: Optional[StationPreparer] = None,
-        processor: Optional[InspectionProcessor] = None,
+        preparer: StationPreparer | None = None,
+        processor: InspectionProcessor | None = None,
     ) -> None:
         if preparer is None:
             if detector is None:
@@ -91,10 +92,10 @@ class InspectionPipeline:
         self,
         frame: object,
         *,
-        event_id: Optional[str] = None,
-        camera_id: Optional[str] = None,
+        event_id: str | None = None,
+        camera_id: str | None = None,
         frame_id: int = 0,
-        captured_at: Optional[float] = None,
+        captured_at: float | None = None,
         quality_observation: bool = False,
     ) -> InspectionResult:
         packet = FramePacket(
@@ -115,10 +116,45 @@ class InspectionPipeline:
         self,
         packets: Iterable[FramePacket],
         *,
-        event_id: Optional[str] = None,
-        camera_id: Optional[str] = None,
+        event_id: str | None = None,
+        camera_id: str | None = None,
         quality_observation: bool = False,
     ) -> InspectionResult:
+        return self._execute_packets(
+            packets,
+            event_id=event_id,
+            camera_id=camera_id,
+            quality_observation=quality_observation,
+            capture_label_crop_snapshot=False,
+        ).result
+
+    def execute_packets(
+        self,
+        packets: Iterable[FramePacket],
+        *,
+        event_id: str | None = None,
+        camera_id: str | None = None,
+        quality_observation: bool = False,
+    ) -> InspectionExecution:
+        """Inspect packets and retain exact pre-inference pixels for local artifacts."""
+
+        return self._execute_packets(
+            packets,
+            event_id=event_id,
+            camera_id=camera_id,
+            quality_observation=quality_observation,
+            capture_label_crop_snapshot=True,
+        )
+
+    def _execute_packets(
+        self,
+        packets: Iterable[FramePacket],
+        *,
+        event_id: str | None,
+        camera_id: str | None,
+        quality_observation: bool,
+        capture_label_crop_snapshot: bool,
+    ) -> InspectionExecution:
         started = time.perf_counter()
         local_event_id = event_id or f"INS-{uuid.uuid4().hex[:12].upper()}"
         outcome = self.preparer.prepare_packets(
@@ -130,17 +166,31 @@ class InspectionPipeline:
             triggered_at_ms=time.time_ns() // 1_000_000,
             quality_observation=quality_observation,
         )
+        prepared = outcome.prepared
+        label_crop_snapshot = (
+            snapshot_image(prepared.label_crop)
+            if capture_label_crop_snapshot and prepared is not None
+            else None
+        )
 
         if outcome.inference_required:
-            if outcome.prepared is None:
+            if prepared is None:
                 raise RuntimeError("inference outcome is missing prepared pixels")
-            result = self.processor.process(outcome.prepared)
+            result = self.processor.process(prepared)
             result.timing["total_ms"] = _elapsed_ms(started)
-            return result
+            return InspectionExecution(
+                result=result,
+                prepared=prepared,
+                label_crop_snapshot=label_crop_snapshot,
+            )
 
         result = _legacy_terminal_result(outcome, self.ocr)
         result.timing["total_ms"] = _elapsed_ms(started)
-        return result
+        return InspectionExecution(
+            result=result,
+            prepared=prepared,
+            label_crop_snapshot=label_crop_snapshot,
+        )
 
 
 def _legacy_terminal_result(

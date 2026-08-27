@@ -30,6 +30,12 @@ def main() -> int:
     parser.add_argument("--max-frames", type=int, default=30)
     parser.add_argument("--timeout-s", type=float, default=15.0)
     parser.add_argument("--detector", default="fixed-roi")
+    parser.add_argument("--detector-model")
+    parser.add_argument("--detector-device")
+    parser.add_argument("--detector-confidence", type=float)
+    parser.add_argument("--detector-iou", type=float)
+    parser.add_argument("--detector-imgsz", type=int)
+    parser.add_argument("--detector-max-det", type=int)
     parser.add_argument("--roi", help="x1,y1,x2,y2; normalized unless --roi-absolute")
     parser.add_argument("--roi-absolute", action="store_true")
     args = parser.parse_args()
@@ -50,6 +56,24 @@ def main() -> int:
         settings,
         camera_id=args.camera_id or settings.camera_id,
         detector=args.detector,
+        detector_model=args.detector_model or settings.detector_model,
+        detector_device=args.detector_device or settings.detector_device,
+        detector_confidence=(
+            settings.detector_confidence
+            if args.detector_confidence is None
+            else args.detector_confidence
+        ),
+        detector_iou=settings.detector_iou if args.detector_iou is None else args.detector_iou,
+        detector_image_size=(
+            settings.detector_image_size
+            if args.detector_imgsz is None
+            else args.detector_imgsz
+        ),
+        detector_max_det=(
+            settings.detector_max_det
+            if args.detector_max_det is None
+            else args.detector_max_det
+        ),
         label_roi=args.roi if args.roi is not None else settings.label_roi,
         roi_normalized=not args.roi_absolute if args.roi is not None else settings.roi_normalized,
     )

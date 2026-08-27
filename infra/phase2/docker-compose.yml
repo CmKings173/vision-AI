@@ -1,0 +1,61 @@
+name: ${COMPOSE_PROJECT_NAME:-vision-ai-phase2}
+
+services:
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-07-18T21-56-31Z}
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    ports:
+      - "${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  minio-bootstrap:
+    image: ${MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z}
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      VISION_ARTIFACT_BUCKET: ${VISION_ARTIFACT_BUCKET:-vision-inspections}
+      VISION_MINIO_ACCESS_KEY: ${VISION_MINIO_ACCESS_KEY:?VISION_MINIO_ACCESS_KEY is required}
+      VISION_MINIO_SECRET_KEY: ${VISION_MINIO_SECRET_KEY:?VISION_MINIO_SECRET_KEY is required}
+    volumes:
+      - ./minio/bootstrap.sh:/opt/bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "/opt/bootstrap.sh"]
+    restart: "no"
+
+  rabbitmq:
+    image: ${RABBITMQ_IMAGE:-rabbitmq:4.1.8-management-alpine}
+    hostname: vision-ai-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?RABBITMQ_DEFAULT_USER is required}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_DEFAULT_VHOST:-/}
+    ports:
+      - "${RABBITMQ_BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_AMQP_PORT:-5672}:5672"
+      - "${RABBITMQ_BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  minio-data:
+    name: ${MINIO_VOLUME_NAME:-vision-ai-phase2-minio-data}
+  rabbitmq-data:
+    name: ${RABBITMQ_VOLUME_NAME:-vision-ai-phase2-rabbitmq-data}

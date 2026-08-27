@@ -1,12 +1,15 @@
+import sys
+import types
 from dataclasses import replace
+from typing import ClassVar
 
 import pytest
 
 from label_inspection.app import build_local_spool, build_pipeline
 from label_inspection.camera.security import resolve_camera_source
 from label_inspection.config import Settings
-from label_inspection.ocr.tensorrt_ocr import TensorRTOCRAdapter
 from label_inspection.ocr.ppocr_v6 import PPOCRV6TransformersAdapter
+from label_inspection.ocr.tensorrt_ocr import TensorRTOCRAdapter
 
 
 def valid_settings(**overrides):
@@ -45,6 +48,72 @@ def test_separate_ocr_device_and_confidence_are_wired():
 
     assert pipeline.ocr.device == "gpu:0"
     assert pipeline.validator.min_field_confidence == 0.83
+
+
+def test_trained_yolo_detector_is_wired_with_normalized_gpu_device(monkeypatch, tmp_path):
+    class FakeYOLO:
+        names: ClassVar = {0: "shipping_label"}
+
+        def __init__(self, path):
+            self.path = path
+
+    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO))
+    model_path = str(tmp_path / "shipping_label_best.pt")
+    (tmp_path / "shipping_label_best.pt").write_bytes(b"weights")
+
+    pipeline = build_pipeline(
+        valid_settings(
+            detector="yolo",
+            detector_model=model_path,
+            detector_device="cpu",
+        )
+    )
+
+    assert pipeline.detector.name == "Ultralytics"
+    assert pipeline.detector.device == "cpu"
+    assert pipeline.detector.model.path == model_path
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("detector_confidence", 1.1, "VISION_DETECTOR_CONFIDENCE"),
+        ("detector_iou", -0.1, "VISION_DETECTOR_IOU"),
+        ("detector_image_size", 0, "VISION_DETECTOR_IMGSZ"),
+        ("detector_max_det", 0, "VISION_DETECTOR_MAX_DET"),
+    ],
+)
+def test_invalid_yolo_runtime_configuration_fails_validation(field, value, message):
+    with pytest.raises(ValueError, match=message):
+        valid_settings(**{field: value}).validate_station()
+
+
+def test_yolo_runtime_configuration_is_wired(monkeypatch, tmp_path):
+    class FakeYOLO:
+        names: ClassVar = {0: "shipping_label"}
+
+        def __init__(self, path):
+            self.path = path
+
+    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO))
+    weights = tmp_path / "shipping_label.pt"
+    weights.write_bytes(b"weights")
+    pipeline = build_pipeline(
+        valid_settings(
+            detector="yolo",
+            detector_model=str(weights),
+            detector_device="cpu",
+            detector_confidence=0.31,
+            detector_iou=0.42,
+            detector_image_size=768,
+            detector_max_det=7,
+        )
+    )
+
+    assert pipeline.detector.confidence == 0.31
+    assert pipeline.detector.iou == 0.42
+    assert pipeline.detector.image_size == 768
+    assert pipeline.detector.max_det == 7
 
 
 def test_tensorrt_ocr_engine_is_wired_without_loading_gpu_runtime():

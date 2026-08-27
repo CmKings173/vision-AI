@@ -22,7 +22,6 @@ from label_inspection.camera.security import mask_url_credentials, resolve_camer
 from label_inspection.config import settings
 from label_inspection.detection.fixed_roi import FixedROIDetector
 from label_inspection.extraction.profiles import DGX_SPARK_LABEL_FIELDS
-from label_inspection.preprocessing.crop import crop_image
 from label_inspection.preprocessing.orientation import normalize_orientation
 
 
@@ -41,6 +40,133 @@ def _percentile(values: list[float], fraction: float) -> float | None:
     ordered = sorted(values)
     index = max(0, min(len(ordered) - 1, int(len(ordered) * fraction + 0.999999) - 1))
     return ordered[index]
+
+
+def _new_runtime_metrics() -> dict[str, object]:
+    """Create counters whose denominators match the stages actually run."""
+
+    return {
+        "total_triggers": 0,
+        "stale_trigger_count": 0,
+        "accepted_frame_triggers": 0,
+        "detection_attempts": 0,
+        "detection_hits": 0,
+        "detection_misses": 0,
+        "ocr_attempts": 0,
+        "ocr_successes": 0,
+        "ocr_failures": 0,
+        "barcode_attempts": 0,
+        "barcode_successes": 0,
+        "barcode_failures": 0,
+        "full_pipeline_attempts": 0,
+        "full_pipeline_passes": 0,
+        "detection_timings": [],
+        "ocr_timings": [],
+        "barcode_timings": [],
+        "parallel_inference_timings": [],
+        "total_inspection_timings": [],
+        "successful_e2e_timings": [],
+    }
+
+
+def _record_stale_metrics(metrics: dict[str, object]) -> None:
+    metrics["total_triggers"] = int(metrics["total_triggers"]) + 1
+    metrics["stale_trigger_count"] = int(metrics["stale_trigger_count"]) + 1
+
+
+def _record_inspection_metrics(
+    metrics: dict[str, object],
+    *,
+    detector_attempts: list[dict],
+    result: object,
+    inspection_ms: float,
+) -> None:
+    metrics["total_triggers"] = int(metrics["total_triggers"]) + 1
+    metrics["accepted_frame_triggers"] = int(metrics["accepted_frame_triggers"]) + 1
+    for attempt in detector_attempts:
+        metrics["detection_attempts"] = int(metrics["detection_attempts"]) + 1
+        accepted = int(attempt.get("accepted_detection_count", 0) or 0) > 0
+        key = "detection_hits" if accepted else "detection_misses"
+        metrics[key] = int(metrics[key]) + 1
+        inference_ms = attempt.get("inference_ms")
+        if isinstance(inference_ms, (int, float)) and inference_ms >= 0:
+            metrics["detection_timings"].append(float(inference_ms))  # type: ignore[union-attr]
+
+    raw_ocr = result.raw_ocr
+    barcode = getattr(result, "barcode", None)
+    ocr_ran = getattr(raw_ocr, "state", "NOT_RUN") != "NOT_RUN"
+    barcode_ran = getattr(barcode, "state", "NOT_RUN") != "NOT_RUN"
+    if ocr_ran:
+        metrics["ocr_attempts"] = int(metrics["ocr_attempts"]) + 1
+        if bool(getattr(raw_ocr, "success", False)):
+            metrics["ocr_successes"] = int(metrics["ocr_successes"]) + 1
+        else:
+            metrics["ocr_failures"] = int(metrics["ocr_failures"]) + 1
+        ocr_ms = result.timing.get("ocr_ms")
+        if isinstance(ocr_ms, (int, float)) and ocr_ms >= 0:
+            metrics["ocr_timings"].append(float(ocr_ms))  # type: ignore[union-attr]
+    if barcode_ran:
+        metrics["barcode_attempts"] = int(metrics["barcode_attempts"]) + 1
+        if bool(getattr(barcode, "success", False)):
+            metrics["barcode_successes"] = int(metrics["barcode_successes"]) + 1
+        else:
+            metrics["barcode_failures"] = int(metrics["barcode_failures"]) + 1
+        barcode_ms = result.timing.get("barcode_ms")
+        if isinstance(barcode_ms, (int, float)) and barcode_ms >= 0:
+            metrics["barcode_timings"].append(float(barcode_ms))  # type: ignore[union-attr]
+    if not (ocr_ran or barcode_ran):
+        return
+    parallel_ms = result.timing.get("parallel_inference_ms")
+    if isinstance(parallel_ms, (int, float)) and parallel_ms >= 0:
+        metrics["parallel_inference_timings"].append(float(parallel_ms))  # type: ignore[union-attr]
+    metrics["full_pipeline_attempts"] = int(metrics["full_pipeline_attempts"]) + 1
+    metrics["total_inspection_timings"].append(float(inspection_ms))  # type: ignore[union-attr]
+    if getattr(result.validation, "status", None) == "PASS":
+        metrics["full_pipeline_passes"] = int(metrics["full_pipeline_passes"]) + 1
+        metrics["successful_e2e_timings"].append(float(inspection_ms))  # type: ignore[union-attr]
+
+
+def _runtime_metrics_summary(metrics: dict[str, object]) -> dict[str, object]:
+    return {
+        "total_triggers": int(metrics["total_triggers"]),
+        "stale_trigger_count": int(metrics["stale_trigger_count"]),
+        "accepted_frame_triggers": int(metrics["accepted_frame_triggers"]),
+        "detection_attempts": int(metrics["detection_attempts"]),
+        "detection_hits": int(metrics["detection_hits"]),
+        "detection_misses": int(metrics["detection_misses"]),
+        "ocr_attempts": int(metrics["ocr_attempts"]),
+        "ocr_successes": int(metrics["ocr_successes"]),
+        "ocr_failures": int(metrics["ocr_failures"]),
+        "barcode_attempts": int(metrics["barcode_attempts"]),
+        "barcode_successes": int(metrics["barcode_successes"]),
+        "barcode_failures": int(metrics["barcode_failures"]),
+        "full_pipeline_attempts": int(metrics["full_pipeline_attempts"]),
+        "full_pipeline_passes": int(metrics["full_pipeline_passes"]),
+        "detection_p50_ms": _percentile(metrics["detection_timings"], 0.50),  # type: ignore[arg-type]
+        "detection_p95_ms": _percentile(metrics["detection_timings"], 0.95),  # type: ignore[arg-type]
+        "ocr_p50_ms": _percentile(metrics["ocr_timings"], 0.50),  # type: ignore[arg-type]
+        "ocr_p95_ms": _percentile(metrics["ocr_timings"], 0.95),  # type: ignore[arg-type]
+        "barcode_p50_ms": _percentile(metrics["barcode_timings"], 0.50),  # type: ignore[arg-type]
+        "barcode_p95_ms": _percentile(metrics["barcode_timings"], 0.95),  # type: ignore[arg-type]
+        "parallel_inference_p50_ms": _percentile(
+            metrics["parallel_inference_timings"], 0.50  # type: ignore[arg-type]
+        ),
+        "parallel_inference_p95_ms": _percentile(
+            metrics["parallel_inference_timings"], 0.95  # type: ignore[arg-type]
+        ),
+        "total_inspection_p50_ms": _percentile(
+            metrics["total_inspection_timings"], 0.50  # type: ignore[arg-type]
+        ),
+        "total_inspection_p95_ms": _percentile(
+            metrics["total_inspection_timings"], 0.95  # type: ignore[arg-type]
+        ),
+        "successful_e2e_p50_ms": _percentile(
+            metrics["successful_e2e_timings"], 0.50  # type: ignore[arg-type]
+        ),
+        "successful_e2e_p95_ms": _percentile(
+            metrics["successful_e2e_timings"], 0.95  # type: ignore[arg-type]
+        ),
+    }
 
 
 def _fresh_packets(buffer: FrameBuffer, now: float, monotonic_now: float):
@@ -133,6 +259,21 @@ def main() -> int:
     )
     parser.add_argument("--roi-absolute", action="store_true")
     parser.add_argument(
+        "--detector",
+        choices=("fixed-roi", "yolo", "ultralytics"),
+        default="fixed-roi",
+        help="Label detector; YOLO uses --detector-model and does not need --roi",
+    )
+    parser.add_argument("--detector-model")
+    parser.add_argument(
+        "--detector-device",
+        help="YOLO device; defaults to --device when --detector=yolo",
+    )
+    parser.add_argument("--detector-confidence", type=float)
+    parser.add_argument("--detector-iou", type=float)
+    parser.add_argument("--detector-imgsz", type=int)
+    parser.add_argument("--detector-max-det", type=int)
+    parser.add_argument(
         "--rotate-deg",
         type=int,
         default=settings.camera_rotate_degrees,
@@ -162,21 +303,46 @@ def main() -> int:
 
     try:
         source = resolve_camera_source(args.source, settings.rtsp_url)
+        detector_name = args.detector.strip().lower().replace("_", "-")
         roi = args.roi if args.roi is not None else settings.label_roi
-        if not roi:
-            raise ValueError(
-                "A calibrated --roi or VISION_LABEL_ROI is required; full-frame ROI is not accepted"
-            )
-        parsed_roi = FixedROIDetector.parse_roi(roi)
         roi_normalized = (
             not args.roi_absolute if args.roi is not None else settings.roi_normalized
         )
-        if roi_normalized and parsed_roi == (0.0, 0.0, 1.0, 1.0):
-            raise ValueError("Full-frame ROI 0,0,1,1 is not accepted for DGX Spark label POC")
+        if detector_name in {"fixed-roi", "fixedroi", "roi"}:
+            if not roi:
+                raise ValueError(
+                    "A calibrated --roi or VISION_LABEL_ROI is required; full-frame ROI is not accepted"
+                )
+            parsed_roi = FixedROIDetector.parse_roi(roi)
+            if roi_normalized and parsed_roi == (0.0, 0.0, 1.0, 1.0):
+                raise ValueError("Full-frame ROI 0,0,1,1 is not accepted for DGX Spark label POC")
+        elif detector_name not in {"yolo", "ultralytics"}:
+            raise ValueError(f"Unsupported detector: {args.detector}")
         config = replace(
             settings,
             camera_id=args.camera_id or settings.camera_id,
-            detector="fixed-roi",
+            detector=detector_name,
+            detector_model=args.detector_model or settings.detector_model,
+            detector_device=(
+                args.detector_device
+                or (args.device if detector_name in {"yolo", "ultralytics"} else settings.detector_device)
+            ),
+            detector_confidence=(
+                settings.detector_confidence
+                if args.detector_confidence is None
+                else args.detector_confidence
+            ),
+            detector_iou=settings.detector_iou if args.detector_iou is None else args.detector_iou,
+            detector_image_size=(
+                settings.detector_image_size
+                if args.detector_imgsz is None
+                else args.detector_imgsz
+            ),
+            detector_max_det=(
+                settings.detector_max_det
+                if args.detector_max_det is None
+                else args.detector_max_det
+            ),
             label_roi=roi,
             roi_normalized=roi_normalized,
             camera_rotate_degrees=args.rotate_deg,
@@ -191,22 +357,28 @@ def main() -> int:
         pipeline = build_pipeline(config)
     except ValueError as exc:
         return _emit({"status": "ERROR", "stage": "setup", "reason": str(exc)}, 2)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - setup boundary serializes runtime failures
         return _emit({"status": "ERROR", "stage": "setup", "reason": str(exc)}, 1)
 
     startup_started = time.perf_counter()
-    print("STARTUP: loading and warming PP-OCRv6...", file=sys.stderr)
+    print("STARTUP: loading and warming detector/OCR...", file=sys.stderr)
+    detector_ready = True
+    detector_warmup_ms = 0.0
     try:
+        detector_warmup = getattr(pipeline.detector, "warmup", None)
+        if callable(detector_warmup):
+            detector_warmup_ms = float(detector_warmup())
+            detector_ready = bool(getattr(pipeline.detector, "ready", False))
         warmup = pipeline.ocr.warmup()
         ocr_ready = bool(warmup.success and getattr(pipeline.ocr, "ready", False))
         zxing_ready = bool(pipeline.barcode.prepare())
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - startup boundary serializes runtime failures
         return _emit(
             {"status": "ERROR", "stage": "startup", "reason": str(exc)},
             1,
         )
     startup_ms = (time.perf_counter() - startup_started) * 1000
-    if not ocr_ready or not zxing_ready:
+    if not detector_ready or not ocr_ready or not zxing_ready:
         return _emit(
             {
                 "status": "ERROR",
@@ -215,11 +387,16 @@ def main() -> int:
                 "ocr_ready": ocr_ready,
                 "ocr_warmup": warmup.to_dict(),
                 "zxing_ready": zxing_ready,
+                "detector_ready": detector_ready,
+                "detector_runtime": getattr(
+                    pipeline.detector, "runtime_metadata", {}
+                ),
             },
             1,
         )
     print(
-        f"STARTUP: OCR ready (warmup_ms={getattr(pipeline.ocr, 'warmup_ms', 0.0):.2f}); "
+        f"STARTUP: detector ready (warmup_ms={detector_warmup_ms:.2f}); "
+        f"OCR ready (warmup_ms={getattr(pipeline.ocr, 'warmup_ms', 0.0):.2f}); "
         f"ZXing ready; startup_ms={startup_ms:.2f}",
         file=sys.stderr,
     )
@@ -234,11 +411,8 @@ def main() -> int:
     acquisition = CameraAcquisition(camera, buffer)
     capture_started_at = time.time()
     acquisition.start()
-    pipeline_timings: list[float] = []
-    total_timings: list[float] = []
-    ocr_timings: list[float] = []
+    metrics = _new_runtime_metrics()
     inspection_summaries: list[dict] = []
-    completed = 0
     try:
         ready, fresh, health = _wait_for_ready(camera, buffer, args.connect_timeout_s)
         if not ready:
@@ -292,20 +466,34 @@ def main() -> int:
                 "ocr_ready_before_trigger": ocr_ready,
                 "zxing_ready_before_trigger": zxing_ready,
                 "ocr_warmup_ms_excluded": getattr(pipeline.ocr, "warmup_ms", 0.0),
+                "detector": {
+                    "name": config.detector,
+                    "model": (
+                        config.detector_model
+                        if config.detector in {"yolo", "ultralytics"}
+                        else None
+                    ),
+                    "device": config.detector_device,
+                    "ready": detector_ready,
+                    "warmup_ms_excluded": detector_warmup_ms,
+                    "runtime": getattr(pipeline.detector, "runtime_metadata", {}),
+                },
                 "orientation": {
                     "rotate_degrees_clockwise": args.rotate_deg,
-                    "normalized_before_fixed_roi": True,
+                    "normalized_before_detector": True,
+                    "normalized_before_fixed_roi": config.detector == "fixed-roi",
                 },
                 "extraction_profile": config.extraction_profile,
                 "required_fields": list(config.required_fields),
             }
             if not fresh_packets:
+                _record_stale_metrics(metrics)
                 payload = _error_payload(
                     source, event_id, "NO_FRESH_FRAME_AT_TRIGGER", telemetry
                 )
                 payload["artifacts"] = {
                     "directory": str(
-                        (Path(args.debug_dir).expanduser().resolve() / event_id)
+                        Path(args.debug_dir).expanduser().resolve() / event_id
                     ),
                     "result": write_result_json(args.debug_dir, event_id, payload),
                 }
@@ -313,49 +501,81 @@ def main() -> int:
                 inspection_summaries.append(
                     {"event_id": event_id, "status": "ERROR", "reason": payload["reason"]}
                 )
+                ready, fresh, health = _wait_for_ready(
+                    camera, buffer, args.connect_timeout_s
+                )
+                if not ready:
+                    print(
+                        f"SYSTEM NOT READY after stale event_id={event_id}: "
+                        f"{health.last_error or 'NO_FRESH_FRAME'}",
+                        file=sys.stderr,
+                    )
+                    break
+                if trigger_index < args.triggers:
+                    print(
+                        f"SYSTEM READY after stale recovery camera_connected={health.connected}; "
+                        f"fresh_frames={len(fresh)}; next_trigger={trigger_index + 1}",
+                        file=sys.stderr,
+                    )
                 continue
 
             processed_packets = _rotate_packets(fresh_packets, args.rotate_deg)
             inspection_started = time.perf_counter()
-            result = pipeline.inspect_packets(
+            execution = pipeline.execute_packets(
                 processed_packets,
                 event_id=event_id,
                 camera_id=config.camera_id,
             )
+            result = execution.result
             pipeline_finished = time.perf_counter()
             telemetry["pipeline_wall_ms"] = (pipeline_finished - inspection_started) * 1000
             payload = _result_payload(source, result, telemetry)
-            selected_packet = next(
-                (packet for packet in processed_packets if packet.frame_id == result.frame_id),
-                None,
-            )
+            preparation_debug = dict(getattr(pipeline.preparer, "last_debug", {}))
+            selected_ids = preparation_debug.get("detector_input_frame_ids", [])
+            detector_input_packet = None
+            if selected_ids:
+                detector_input_packet = next(
+                    (
+                        packet
+                        for packet in processed_packets
+                        if packet.frame_id == selected_ids[0]
+                    ),
+                    None,
+                )
+            if detector_input_packet is None:
+                detector_input_packet = processed_packets[0]
             artifact_paths = None
-            if selected_packet is not None and result.label is not None:
-                try:
-                    label_crop = crop_image(
-                        selected_packet.frame,
-                        tuple(result.label.bbox),
-                        padding_ratio=config.bbox_padding_ratio,
-                    ).image
-                    artifact_paths = save_inspection_artifacts(
-                        args.debug_dir,
-                        event_id,
-                        selected_frame=selected_packet.frame,
-                        label_crop=label_crop,
-                        result_payload=payload,
-                    )
-                except Exception as exc:
-                    payload["artifact_error"] = str(exc)
-                    payload["artifacts"] = {
-                        "directory": str(
-                            (Path(args.debug_dir).expanduser().resolve() / event_id)
-                        ),
-                        "result": write_result_json(args.debug_dir, event_id, payload),
-                    }
-            if "artifacts" not in payload:
+            try:
+                artifact_selected_frame = (
+                    execution.prepared.selected_frame
+                    if execution.prepared is not None
+                    else detector_input_packet.frame
+                )
+                detector_debug = {
+                    "event_id": event_id,
+                    "detector": preparation_debug,
+                }
+                artifact_paths = save_inspection_artifacts(
+                    args.debug_dir,
+                    event_id,
+                    selected_frame=artifact_selected_frame,
+                    label_crop=execution.label_crop_snapshot,
+                    detector_input=detector_input_packet.frame,
+                    detector_debug=detector_debug,
+                    result_payload=payload,
+                )
+            except Exception as exc:  # noqa: BLE001 - artifact boundary must preserve result
+                payload["artifact_error"] = str(exc)
                 payload["artifacts"] = {
                     "directory": str(
-                        (Path(args.debug_dir).expanduser().resolve() / event_id)
+                        Path(args.debug_dir).expanduser().resolve() / event_id
+                    ),
+                    "result": write_result_json(args.debug_dir, event_id, payload),
+                }
+            if artifact_paths is None and "artifacts" not in payload:
+                payload["artifacts"] = {
+                    "directory": str(
+                        Path(args.debug_dir).expanduser().resolve() / event_id
                     ),
                     "result": write_result_json(args.debug_dir, event_id, payload),
                 }
@@ -366,13 +586,14 @@ def main() -> int:
             if payload.get("artifacts", {}).get("result"):
                 write_result_json(args.debug_dir, event_id, payload)
             _emit(payload, 0 if result.validation.status in {"PASS", "REVIEW", "FAIL"} else 1)
-            completed += 1
-            pipeline_total_ms = float(result.timing.get("total_ms", telemetry["pipeline_wall_ms"]))
             total_inspection_ms = float(telemetry["inspection_wall_ms"])
-            ocr_ms = float(result.timing.get("ocr_ms", 0.0))
-            pipeline_timings.append(pipeline_total_ms)
-            total_timings.append(total_inspection_ms)
-            ocr_timings.append(ocr_ms)
+            detector_attempts = preparation_debug.get("detector_attempts", [])
+            _record_inspection_metrics(
+                metrics,
+                detector_attempts=detector_attempts,
+                result=result,
+                inspection_ms=total_inspection_ms,
+            )
             inspection_summaries.append(
                 {
                     "event_id": event_id,
@@ -410,29 +631,33 @@ def main() -> int:
             )
 
     summary = {
-        "status": "COMPLETED" if completed == args.triggers else "INCOMPLETE",
+        "status": "COMPLETED"
+        if int(metrics["total_triggers"]) == args.triggers
+        else "INCOMPLETE",
         "triggers_requested": args.triggers,
-        "triggers_completed": completed,
+        "triggers_completed": int(metrics["total_triggers"]),
         "same_process_model_reuse": True,
         "startup": {
             "ocr_ready_before_camera": ocr_ready,
             "ocr_warmup_ms_excluded_from_ocr_ms": getattr(
                 pipeline.ocr, "warmup_ms", 0.0
             ),
+            "detector_ready_before_camera": detector_ready,
+            "detector_warmup_ms_excluded_from_detection_ms": detector_warmup_ms,
+            "detector_runtime": getattr(pipeline.detector, "runtime_metadata", {}),
             "zxing_ready_before_camera": zxing_ready,
         },
         "benchmark": {
             "warmup_excluded": True,
-            "ocr_p50_ms": _percentile(ocr_timings, 0.50),
-            "ocr_p95_ms": _percentile(ocr_timings, 0.95),
-            "pipeline_total_p50_ms": _percentile(pipeline_timings, 0.50),
-            "pipeline_total_p95_ms": _percentile(pipeline_timings, 0.95),
-            "total_inspection_p50_ms": _percentile(total_timings, 0.50),
-            "total_inspection_p95_ms": _percentile(total_timings, 0.95),
+            **_runtime_metrics_summary(metrics),
         },
+        "metrics": _runtime_metrics_summary(metrics),
         "results": inspection_summaries,
     }
-    return _emit(summary, 0 if completed == args.triggers else 1)
+    return _emit(
+        summary,
+        0 if int(metrics["total_triggers"]) == args.triggers else 1,
+    )
 
 
 if __name__ == "__main__":

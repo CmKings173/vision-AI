@@ -42,7 +42,6 @@ def rectify_image(
     shape = getattr(image, "shape", None)
     if shape is None or len(shape) < 2:
         raise ValueError("perspective correction requires an image with shape")
-    height, width = int(shape[0]), int(shape[1])
     if output_size is None:
         top_width = math.dist(ordered[0], ordered[1])
         bottom_width = math.dist(ordered[3], ordered[2])

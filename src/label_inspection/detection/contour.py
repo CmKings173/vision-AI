@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from ..schemas import LabelCandidate
 from .fixed_roi import frame_size
 

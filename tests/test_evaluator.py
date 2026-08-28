@@ -165,7 +165,7 @@ def _writer(**kwargs):
 
 
 def test_evaluator_isolates_one_sample_failure(tmp_path):
-    samples = _dataset(tmp_path, count=2)
+    _dataset(tmp_path, count=2)
 
     def loader(path):
         if path.name.endswith("0002.jpg"):
@@ -224,7 +224,7 @@ def test_quality_observation_preserves_production_status(tmp_path):
 
 
 def test_evaluator_writes_complete_phase1_report_contract(tmp_path):
-    samples = _dataset(tmp_path)
+    _dataset(tmp_path)
     output = tmp_path / "results"
     summary = DatasetEvaluator(
         pipeline=FakePipeline(),

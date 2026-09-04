@@ -82,12 +82,16 @@ ANY DOCUMENT
        -> KNOWN + approved profile
           -> semantic mapping + profile validation
           -> PASS / REVIEW / FAIL
-       -> UNKNOWN or AMBIGUOUS
+       -> UNKNOWN, AMBIGUOUS, or no approved profile
           -> preserve evidence
           -> REVIEW
 ~~~
 
-A profile is not a prerequisite for:
+A document profile is not required for document ingestion or generic evidence
+extraction. Profiles are only required for approved semantic mapping and
+profile-specific business validation.
+
+More specifically, a profile is not a prerequisite for:
 
 - ingestion;
 - document localization;
@@ -103,6 +107,20 @@ A profile MUST be required only for:
 - format rules;
 - barcode policy;
 - automated business validation.
+
+Automated `PASS` MUST only be produced after a known document has been matched
+to an approved profile and all required validation rules for that profile have
+been evaluated successfully.
+
+Consequently:
+
+- `UNKNOWN`, `AMBIGUOUS`, no approved profile, or validation that has not run
+  MUST NOT produce `PASS`; in the absence of a technical failure, they result
+  in `REVIEW`;
+- uncertainty or insufficient evidence results in `REVIEW`;
+- a technical runtime failure results in `ERROR`, while a confirmed business
+  rule violation supported by sufficiently reliable evidence results in
+  `FAIL`.
 
 ## Document Profile definition and boundary
 
@@ -177,6 +195,9 @@ vocabulary includes:
 - `MULTIPLE_CLOSE_CANDIDATES`;
 - `INSUFFICIENT_EVIDENCE`;
 - `UNSUPPORTED_VARIANT`.
+
+`LOW_CONFIDENCE` is not a recognition status. It is a reason or condition that
+may result in `UNKNOWN` or `AMBIGUOUS`.
 
 The contract SHOULD distinguish recognition confidence from business
 confidence. A field such as `recognition_confidence` describes the evidence
@@ -523,7 +544,8 @@ The following decisions remain intentionally open:
    rejected?
 6. Which recognition threshold is sufficient to classify a document as
    `KNOWN`?
-7. Which conditions permit automated `PASS` versus `REVIEW`?
+7. Which additional business-specific conditions, beyond the minimum automated
+   `PASS` invariant in this ADR, permit `PASS` versus `REVIEW`?
 8. How long should unknown-document evidence be retained?
 
 ## Guardrails

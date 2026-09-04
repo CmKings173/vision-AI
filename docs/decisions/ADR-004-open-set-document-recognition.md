@@ -2,507 +2,557 @@
 
 ## Status
 
-Proposed. This document is a discussion baseline and is not approval to
-implement or deploy the proposed recognition policy.
+Proposed. This ADR is a review and discussion baseline. It is not approval to
+change runtime behavior or deploy a new recognition policy.
 
 ## Date
 
-2026-09-03
+2026-09-04
 
 ## Scope
 
-This ADR defines a direction for recognizing customer labels and other
-documents when the complete set of document types is not known in advance.
+This ADR defines the recognition and evidence policy for the current Vision
+document-inspection project when the complete set of customer documents is not
+known in advance.
 
 It covers:
 
 - document localization and recognition;
 - known, unknown, and ambiguous document handling;
-- discovery of new document families and variants;
-- OCR evidence and field extraction contracts;
+- generic evidence extraction;
 - semantic mapping provenance;
-- validation behavior for known and unknown documents.
+- extensible canonical fields;
+- profile-specific validation;
+- incremental discovery of new document families and variants.
 
 It does not decide:
 
-- JWT or authentication;
-- ERP delivery or `erp_deliveries`;
-- the final PostgreSQL migration;
-- the final business meaning of `NVIDIA P/N`;
-- the exact machine-learning model for every recognition stage.
+- runtime implementation, model deployment, or model selection;
+- PostgreSQL migrations or the final database schema;
+- JWT, authentication, or users;
+- ERP integration or `erp_deliveries`;
+- creation of additional microservices;
+- the business meaning of any unconfirmed field;
+- the storage technology used for the profile registry.
 
 ## Context
 
-The current inspection pipeline is designed around a known DGX Spark label
-profile. The manual RTSP script configures a fixed ROI and a fixed list of
-required fields:
+The current system cannot know in advance:
 
-~~~text
-Fixed ROI
-    -> OCR
-    -> barcode
-    -> fixed DGX Spark fields
-    -> validation
-~~~
+- which customer will provide a document;
+- which document or label layout will appear;
+- which fields a document contains;
+- which source label names are used for those fields;
+- which document family or variant will appear;
+- which canonical business field, if any, a source label maps to.
 
-This is reasonable for a controlled proof of concept where the camera view,
-label layout, and business fields are already known. It is not sufficient for
-the wider requirement of accepting customer labels whose number, layout, and
-field set are not yet known.
+The current proof of concept is intentionally narrower. The manual RTSP flow
+uses a calibrated detector option, OCR, barcode decoding, and the
+`dgx_spark_label` extraction configuration. That controlled behavior is useful
+for a known station, but a global list of required fields is not a safe model
+for every customer document.
 
-The current design has several risks:
+The current closed assumptions create these risks:
 
-1. A single global required-field list treats every label as if it has the
-   same schema.
-2. The extractor represents an absent field as `NOT_FOUND`, although the
-   field may be genuinely not applicable to that document.
-3. The profile currently aliases `NVIDIA P/N` to `customer_part_number`.
-   Business has not confirmed that semantic mapping.
-4. A closed-set classifier could force an unseen document into the closest
-   known type instead of identifying it as new.
-5. Validation cannot determine whether a missing value means an OCR failure,
-   an unsupported document variant, or a field that does not apply.
+1. A document can be valid while not containing fields from another document
+   variant.
+2. OCR may observe a source label without knowing its business meaning.
+3. An unseen document may be incorrectly forced into the closest known type.
+4. A missing field can mean `NOT_APPLICABLE`, OCR failure, or an unsupported
+   variant; these are not the same condition.
+5. Recognition confidence can be mistaken for business validation confidence.
 
-The system therefore needs an open-set or open-world behavior: it must be
-able to process evidence from a new document without pretending that the
-document belongs to a known business schema.
+The system therefore needs open-set/open-world behavior. It must be able to
+ingest and preserve evidence from a new document without requiring an approved
+business profile first.
 
 ## Decision proposal
 
-Adopt an open-set document-recognition architecture with explicit discovery
-and profile promotion.
+The system SHOULD separate document ingestion, evidence extraction, document
+recognition, semantic mapping, and business validation.
 
-The system should recognize a document in two separate dimensions:
-
-1. **Document identity:** what family or variant the document appears to be.
-2. **Document content:** what text, barcode, layout elements, and candidate
-   fields were actually observed.
-
-Business validation is only applied when document identity is known with
-adequate confidence and a profile exists for that identity.
-
-An unseen or ambiguous document must be preserved as evidence and returned as
-`REVIEW`, rather than being forced into an existing profile.
-
-## Proposed processing flow
+The processing policy is:
 
 ~~~text
-Camera / input frame
-    |
-    v
-Document localization
-    |  Find one or more document regions; do not require one fixed ROI only
-    v
-Quality and orientation
-    |
-    v
-Evidence extraction
-    |  OCR tokens + boxes, barcode, layout, image features
-    v
-Document recognition
-    |
-    +--> KNOWN profile/variant
-    |       |
-    |       v
-    |   Profile-specific extraction and validation
-    |
-    +--> UNKNOWN document
-    |       |
-    |       v
-    |   Persist evidence and return REVIEW
-    |
-    +--> AMBIGUOUS match
-            |
-            v
-        Persist evidence and return REVIEW
+ANY DOCUMENT
+    -> document localization
+    -> quality and orientation
+    -> generic evidence extraction
+    -> document recognition
+       -> KNOWN + approved profile
+          -> semantic mapping + profile validation
+          -> PASS / REVIEW / FAIL
+       -> UNKNOWN or AMBIGUOUS
+          -> preserve evidence
+          -> REVIEW
 ~~~
 
-The current fixed-ROI detector can remain as a station-specific optimization,
-but it must become one detector option rather than the only mechanism for
-finding documents.
+A profile is not a prerequisite for:
 
-## Document recognition model
+- ingestion;
+- document localization;
+- OCR;
+- barcode decoding;
+- raw evidence extraction;
+- evidence persistence.
 
-The initial recognition contract should distinguish a document family from a
-specific layout variant:
+A profile MUST be required only for:
+
+- approved semantic mappings;
+- required, optional, and not-applicable field policy;
+- format rules;
+- barcode policy;
+- automated business validation.
+
+## Document Profile definition and boundary
+
+### Definition
+
+**Document Profile** means:
+
+> A versioned, business-approved policy describing how a recognized document
+> family/variant should be semantically mapped and validated.
+
+A profile MAY define:
+
+- `family` and `variant` identity;
+- a stable `profile_code`;
+- `profile_version`;
+- approval state;
+- required, optional, and not-applicable canonical fields;
+- approved source-label to canonical-field mappings;
+- barcode policy;
+- format rules;
+- validation rules.
+
+### What a profile is not
+
+A Document Profile is not:
+
+- an OCR model;
+- a document detector;
+- a document classifier model;
+- a raw OCR schema;
+- a list of every field that could ever exist;
+- a prerequisite for ingesting a document;
+- a global schema applied to every customer;
+- proof that a source label has a particular business meaning.
+
+Document evidence MUST remain representable even when no profile exists.
+
+## Localization and recognition
+
+Localization and recognition are separate dimensions.
+
+### Localization status
+
+Localization answers: “How many usable document regions were found in this
+frame?”
+
+The allowed localization statuses are:
+
+- `NO_DOCUMENT`;
+- `SINGLE_DOCUMENT`;
+- `MULTIPLE_DOCUMENTS`.
+
+The locator SHOULD return document regions as a collection, even when the
+current station usually contains one document. The architecture MUST NOT
+assume that one frame contains exactly one document.
+
+### Recognition status
+
+Recognition answers: “Does the observed document match an approved profile?”
+
+The allowed recognition statuses are:
+
+- `KNOWN`;
+- `UNKNOWN`;
+- `AMBIGUOUS`.
+
+Recognition reasons are separate from recognition status. The supported reason
+vocabulary includes:
+
+- `LOW_CONFIDENCE`;
+- `NO_PROFILE_ABOVE_THRESHOLD`;
+- `MULTIPLE_CLOSE_CANDIDATES`;
+- `INSUFFICIENT_EVIDENCE`;
+- `UNSUPPORTED_VARIANT`.
+
+The contract SHOULD distinguish recognition confidence from business
+confidence. A field such as `recognition_confidence` describes the evidence
+for matching a document to a profile. It MUST NOT be presented as proof that
+the extracted business values are correct.
+
+An implementation MUST NOT use a forced argmax as the final document identity.
+If the best candidate does not satisfy the acceptance threshold, the result
+remains `UNKNOWN` or `AMBIGUOUS` with a reason.
+
+### Recognition contract
+
+The conceptual result is:
 
 ~~~json
 {
-  "document": {
-    "status": "KNOWN",
-    "family": "customer_label",
-    "variant": "customer_a_v1",
-    "profile_id": "customer_a_v1",
-    "confidence": 0.94,
-    "match_method": "OCR_LAYOUT_RETRIEVAL",
-    "profile_version": "1"
+  "localization": {
+    "status": "SINGLE_DOCUMENT",
+    "documents": [
+      {
+        "index": 0,
+        "bbox": [120, 80, 980, 720]
+      }
+    ]
+  },
+  "recognition": {
+    "status": "UNKNOWN",
+    "reason": "LOW_CONFIDENCE",
+    "recognition_confidence": 0.54,
+    "best_candidate": "customer_a"
   }
 }
 ~~~
 
-The minimum document statuses are:
+`NO_DOCUMENT` and `MULTIPLE_DOCUMENTS` belong to localization. They MUST NOT
+be encoded as recognition reasons or as a single overloaded document status.
+The station or business policy may later decide whether multiple documents are
+processed independently, held, reviewed, or rejected; this ADR does not make
+that decision.
 
-- `KNOWN`: one approved profile matches above its acceptance threshold;
-- `UNKNOWN`: no approved profile matches sufficiently;
-- `AMBIGUOUS`: multiple profiles are plausible or confidence is too close;
-- `LOW_CONFIDENCE`: a candidate exists but evidence is insufficient;
-- `NO_DOCUMENT`: no usable document region was found;
-- `MULTIPLE_DOCUMENTS`: more than one document was found and the station
-  policy does not define how to process them.
+## Evidence, semantic mapping, and validation
 
-The recognizer must not use a forced argmax result as the final identity. A
-low-confidence best match is still `UNKNOWN` or `AMBIGUOUS` when it does not
-meet the profile acceptance policy.
+These are three different status dimensions and MUST NOT be represented as one
+overloaded field status.
 
-## Evidence extraction contract
+### Evidence/extraction status
 
-Evidence extraction must be non-destructive. It records what the system saw
-before assigning business meaning.
+Evidence describes what OCR, barcode, layout, or image analysis observed:
 
-The proposed output has two layers:
+- `FOUND`;
+- `NOT_FOUND`;
+- `AMBIGUOUS`;
+- `CONFLICT`;
+- `LOW_CONFIDENCE`.
 
-1. `observations`: raw or normalized observations from OCR, barcode, and
-   layout analysis;
-2. `fields`: canonical business fields only when an approved mapping exists.
+`NOT_FOUND` means that the requested observation was not found. It does not by
+itself prove that the field is required or applicable.
 
-Example:
+### Semantic mapping status
+
+Semantic mapping describes whether an observed source label/value has approved
+business meaning:
+
+- `MAPPED`;
+- `UNMAPPED`;
+- `NOT_APPLICABLE`;
+- `AMBIGUOUS_MAPPING`.
+
+`NOT_APPLICABLE` is a policy or semantic decision. It MUST NOT be inferred
+merely because OCR did not find a value.
+
+### Validation status
+
+Validation describes the result of applying an approved profile policy. Its
+vocabulary MAY include:
+
+- `VALID`;
+- `INVALID_FORMAT`;
+- `MISSING_REQUIRED`;
+- `CONFLICT`;
+- `LOW_CONFIDENCE`;
+- `UNMAPPED_REQUIRED`.
+
+The outer inspection result MAY still use the existing project-level outcomes
+`PASS`, `REVIEW`, `FAIL`, and `ERROR`, but their reasons MUST identify whether
+the cause is technical, recognition-related, semantic, or business-policy
+validation.
+
+### Example
+
+If OCR observes:
+
+~~~text
+NVIDIA P/N: ABC-001
+~~~
+
+the evidence and semantic result SHOULD be represented as:
 
 ~~~json
 {
-  "observations": [
-    {
-      "source_label": "NVIDIA P/N",
-      "raw_value": "ABC-001",
-      "normalized_value": "ABC-001",
-      "source_line": "NVIDIA P/N: ABC-001",
-      "confidence": 0.96,
-      "semantic_status": "UNMAPPED",
-      "canonical_field": null
-    },
-    {
-      "source_label": "QTY",
-      "raw_value": "10",
-      "normalized_value": "10",
-      "source_line": "QTY: 10",
-      "confidence": 0.94,
-      "semantic_status": "MAPPED",
-      "canonical_field": "quantity"
-    }
-  ],
-  "fields": {
-    "quantity": {
-      "value": "10",
-      "status": "FOUND",
-      "confidence": 0.94,
-      "provenance": "approved_profile_mapping"
-    }
+  "source_label": "NVIDIA P/N",
+  "raw_value": "ABC-001",
+  "extraction": {
+    "status": "FOUND",
+    "confidence": 0.99
+  },
+  "semantic": {
+    "status": "UNMAPPED",
+    "canonical_field": null,
+    "reason": "NEEDS_BUSINESS_CONFIRMATION"
   }
 }
 ~~~
 
-The evidence contract should preserve, where available:
+High OCR confidence MUST NOT be interpreted as proof of semantic mapping.
 
-- source label text;
-- raw value and normalized value;
-- OCR source line and token/region coordinates;
-- confidence;
-- document region and frame identity;
-- barcode format, value, and decode status;
-- extraction method;
-- mapping rule and mapping version;
-- conflicts and alternative candidates.
+## Extensible canonical vocabulary
 
-The extractor must not drop a value merely because it cannot map that value to
-a canonical field.
+The canonical field vocabulary is extensible and MUST NOT be treated as a
+closed set known completely in advance.
 
-## Field statuses
+If OCR observes:
 
-The following statuses separate absence, uncertainty, and semantic decisions:
+~~~text
+CUSTOM REF: ZX-001
+~~~
 
-| Status | Meaning | Default validation effect |
-|---|---|---|
-| `FOUND` | A field/value was identified with usable evidence | Continue validation |
-| `NOT_FOUND` | The active profile expects the field but no value was found | `REVIEW` |
-| `NOT_APPLICABLE` | The active profile says the field does not apply | No missing-field failure |
-| `AMBIGUOUS` | Multiple candidates cannot be selected safely | `REVIEW` |
-| `CONFLICT` | Evidence contains contradictory values | `REVIEW` |
-| `UNMAPPED` | Source label/value is known to OCR but has no approved canonical mapping | `REVIEW` when business-critical |
-| `LOW_CONFIDENCE` | A candidate exists below the acceptance threshold | `REVIEW` |
-| `INVALID_FORMAT` | Value is present but violates the active profile format rule | `FAIL` or `REVIEW` by policy |
+and business has not defined its meaning, the system MUST preserve it as an
+unmapped observation:
 
-`NOT_APPLICABLE` must not be inferred merely because OCR did not find a field.
-It should come from the recognized document profile or an explicit business
-policy.
+~~~json
+{
+  "source_label": "CUSTOM REF",
+  "raw_value": "ZX-001",
+  "semantic": {
+    "status": "UNMAPPED",
+    "canonical_field": null
+  }
+}
+~~~
 
-## Semantic mapping policy
+The system MUST NOT:
 
-No unconfirmed semantic mapping is production-approved.
+- drop the observation;
+- assign it to a merely similar field;
+- invent a canonical meaning.
 
-In particular, the current mapping below remains a known blocker:
+After business approval, a mapping such as:
+
+~~~text
+CUSTOM REF -> customer_reference
+~~~
+
+MAY be added as a new version of the approved vocabulary/profile. The original
+source label and raw value MUST remain available for provenance.
+
+## Semantic mapping guardrail
+
+The mapping below remains explicitly unconfirmed:
 
 ~~~text
 NVIDIA P/N -> customer_part_number
 ~~~
 
-Until business confirms this relationship, the safe behavior is:
+It MUST NOT be treated as production-verified until business confirms the
+relationship. Until then, the result SHOULD retain:
 
 ~~~text
 source_label = NVIDIA P/N
 canonical_field = null
-semantic_status = UNMAPPED
-provenance = NEEDS_BUSINESS_CONFIRMATION
+semantic.status = UNMAPPED
+semantic.reason = NEEDS_BUSINESS_CONFIRMATION
 ~~~
 
-An approved mapping registry should eventually contain:
+This ADR does not decide whether the mapping is correct.
 
-~~~json
-{
-  "source_label": "CUSTOMER P/N",
-  "canonical_field": "customer_part_number",
-  "approved_by": "business_owner",
-  "mapping_version": "1",
-  "effective_at": "2026-09-03T00:00:00Z"
-}
-~~~
+## Profile identity and version
 
-Raw observations must remain available even after a mapping is approved. This
-allows the system to explain how a canonical value was produced and to revise
-the mapping without losing the original evidence.
+The profile identity MUST NOT encode the version twice.
 
-## Profile and variant model
-
-Each approved document variant should define its own policy rather than
-sharing one global required-field list.
-
-~~~json
-{
-  "profile_id": "customer_a_v1",
-  "family": "customer_label",
-  "version": "1",
-  "required_fields": ["quantity"],
-  "optional_fields": ["lot_number", "net_weight"],
-  "not_applicable_fields": ["gross_weight"],
-  "barcode_policy": "OPTIONAL",
-  "format_rules": {
-    "quantity": "positive_integer"
-  }
-}
-~~~
-
-The profile registry is the source of policy for both extraction and
-validation. The extractor and validator must not independently maintain
-incompatible field lists or format rules.
-
-## Validation policy
-
-Validation should operate in this order:
-
-1. Check that a usable document region exists.
-2. Check quality and OCR/runtime health.
-3. Resolve document family and variant.
-4. If the profile is unknown or ambiguous, return `REVIEW` with the document
-   recognition reason.
-5. For a known profile, validate only its required fields.
-6. Treat optional and not-applicable fields according to profile policy.
-7. Treat ambiguous, conflicting, low-confidence, and unapproved semantic
-   mappings as `REVIEW`.
-8. Apply format and barcode policy from the same profile.
-
-Suggested status semantics:
+This ADR uses the simple logical pattern:
 
 ~~~text
-Technical runtime failure       -> ERROR
-Unknown document type            -> REVIEW
-Ambiguous document type          -> REVIEW
-Missing required field           -> REVIEW
-Not-applicable optional field    -> no failure
-Unmapped business-critical field -> REVIEW
-Clearly invalid format           -> FAIL or REVIEW by profile policy
-All required evidence valid      -> PASS
+family         = customer_label
+variant        = customer_a
+profile_code   = customer_a
+profile_version = 1
 ~~~
 
-The validator should not directly infer business meaning from a source label
-or from a high OCR confidence. OCR confidence says how likely the text is
-correct; it does not prove that the text has a particular business meaning.
+The profile code MUST NOT be `customer_a_v1` while `profile_version` is also
+`1`. The storage and transport representation of this logical identity is
+deferred to a later schema/interface decision.
 
-## Discovery mode and profile promotion
+## DocumentProfileRegistry responsibility
 
-Because the full document catalog is not known, the system needs a discovery
-workflow before enforcing production validation for every document.
+`DocumentProfileRegistry` is a logical responsibility, not a storage decision.
 
-### Discovery capture
+It is responsible for resolving approved profiles and their versions. This ADR
+does not require the registry to be stored in:
 
-For each document event, persist enough evidence to reproduce classification:
+- JSON or YAML in Git;
+- PostgreSQL;
+- a configuration service;
+- any other particular storage technology.
+
+The registry MUST expose only approved profiles to automated business
+validation. Draft or unapproved profiles MAY support review and analysis but
+MUST NOT produce automated `PASS`.
+
+## Incremental discovery rollout
+
+Open-set behavior MUST be deliverable incrementally. Clustering, vector search,
+and automatic profile generation are not prerequisites for the first phase.
+
+### Phase 1: Generic evidence and safe unknown handling
+
+The system SHOULD:
+
+- locate document regions according to the station capability;
+- run quality/orientation and generic evidence extraction;
+- preserve raw OCR, barcode, layout, and image evidence;
+- return `UNKNOWN` or `AMBIGUOUS` when recognition is not established;
+- return `REVIEW` for unknown or ambiguous recognition;
+- avoid semantic guessing.
+
+### Phase 2: Approved profile recognition
+
+The system MAY add:
+
+- retrieval against approved profiles;
+- known/unknown/ambiguous threshold evaluation;
+- profile-specific semantic mappings;
+- profile-specific required/optional/not-applicable policy;
+- profile-specific validation.
+
+### Phase 3: Discovery assistance
+
+The system MAY later add:
+
+- document fingerprints;
+- similarity search;
+- clustering of unknown documents;
+- human-assisted profile drafting and promotion.
+
+Phase 3 improves catalog maintenance. It is not required to establish the
+open-set safety behavior in Phase 1.
+
+## Evidence namespace
+
+Evidence for a localized document SHOULD be addressable independently from the
+inspection and from other documents in the same frame.
+
+The conceptual namespace is:
 
 ~~~text
-discovery/<event_id>/
-    original_frame.jpg
-    document_crop.jpg
-    ocr.json
-    barcode.json
-    layout.json
-    fingerprint.json
+inspections/<inspection_id>/documents/<document_index>/
 ~~~
 
-The existing Local Spool can provide durable local storage for this evidence
-when a station must survive network or service interruptions. It is not a
-replacement for a document registry or a business review tool.
-
-### Clustering and review
-
-Similar documents can be grouped using OCR, layout, and visual features:
+An inspection MAY also contain frame-level evidence alongside the document
+regions:
 
 ~~~text
-new evidence
-    -> fingerprint
-    -> nearest known profile or cluster
-    -> known / ambiguous / unknown
-    -> human review for new clusters
+inspections/<inspection_id>/
+    original_frame
+    documents/
+        0/
+            document_crop
+            ocr_evidence
+            barcode_evidence
+            layout_evidence
+            recognition_evidence
 ~~~
 
-Human review assigns a business family, identifies variants, and defines the
-required/optional/not-applicable fields. Only then is a cluster promoted to an
-approved profile.
-
-### Profile lifecycle
-
-~~~text
-DISCOVERED
-    -> REVIEWED
-    -> PROFILE_DRAFT
-    -> BUSINESS_APPROVED
-    -> ACTIVE
-~~~
-
-An unapproved draft must not be used to produce an automated `PASS` result.
-
-## Proposed module boundaries
-
-The future implementation should separate these responsibilities:
-
-~~~text
-DocumentLocator
-    Finds document regions in a frame.
-
-DocumentRecognizer
-    Resolves known/unknown/ambiguous identity.
-
-DocumentProfileRegistry
-    Stores approved profiles and their versions.
-
-EvidenceExtractor
-    Produces OCR/barcode/layout observations without semantic guessing.
-
-SemanticMapper
-    Applies only approved, versioned mappings.
-
-PolicyValidator
-    Validates a mapped result against the selected profile.
-
-DiscoveryStore
-    Preserves unknown evidence for clustering and human review.
-~~~
-
-Each boundary should have a stable input/output contract. Recognition output
-must not expose an implementation-specific classifier score as if it were a
-business confidence score; the contract should state what the score means and
-which threshold produced the status.
-
-## Alternatives considered
-
-### Fixed global schema
-
-Keep one `DGX_SPARK_LABEL_FIELDS` list for every label.
-
-Rejected as the general solution because it marks genuinely absent fields as
-missing and cannot represent label variants safely. It can remain as a
-temporary profile for one controlled station while discovery is developed.
-
-### Closed-set classifier
-
-Train a classifier that always chooses one of the currently known document
-types.
-
-Rejected because an unseen document would be forced into an existing type. The
-result can look confident while applying the wrong extraction and validation
-policy.
-
-### VLM/LLM as the sole document interpreter
-
-Send every image to a multimodal model and use its answer as the final
-document type and field mapping.
-
-Rejected as the sole production authority because the output can be
-non-deterministic, difficult to validate, and vulnerable to semantic mistakes
-such as the unconfirmed `NVIDIA P/N` mapping. It may be useful as a discovery
-assistant or review aid.
-
-### Open-set hybrid recognition
-
-Combine document localization, OCR/layout evidence, barcode evidence, visual
-similarity, profile retrieval, and explicit unknown thresholds.
-
-Recommended because it supports unknown documents, preserves evidence, allows
-incremental catalog growth, and keeps business validation policy explicit.
+These are logical artifact categories, not a commitment to exact filenames or
+to a particular object store. If discovery later becomes an independent
+aggregate, it MAY introduce a separate `discoveries/<discovery_id>/` namespace
+through a future ADR.
 
 ## Consequences
 
 ### Positive consequences
 
-- New customer documents do not have to be known before ingestion.
-- Unknown documents are visible instead of silently misclassified.
-- Raw OCR evidence is preserved even when semantic mapping is unresolved.
-- Required fields can differ by document variant.
-- Business mappings can be approved and versioned independently of OCR.
-- Validation becomes explainable: identity, evidence, mapping, and policy are
-  separate reasons.
+- New document types can be ingested without a pre-existing profile.
+- Unknown and ambiguous documents become visible instead of silently being
+  misclassified.
+- Raw evidence remains available when semantic meaning is unresolved.
+- Canonical fields can evolve without pretending the initial vocabulary is
+  complete.
+- Required fields and validation policy can vary by approved document variant.
+- Recognition, semantic mapping, and business validation become explainable
+  separately.
 
 ### Costs and risks
 
-- A discovery/review process is required.
-- A document profile registry must be maintained.
-- Full-frame document localization is more complex than one calibrated ROI.
-- Unknown documents cannot receive automated `PASS` until a profile exists.
-- Clustering and visual retrieval require additional storage and evaluation.
-- Recognition thresholds need a representative validation dataset.
+- Unknown documents need a review and catalog-maintenance process.
+- An approved profile registry and business approval workflow are required
+  before automated validation can cover a new variant.
+- Document localization beyond a controlled ROI may require additional model
+  evaluation later.
+- Thresholds require representative evidence and must be evaluated separately
+  from business validation accuracy.
+- No automated `PASS` is available for an unapproved or ambiguous document.
+
+## Alternatives considered
+
+### Global fixed field schema
+
+Rejected as the general policy because it treats every customer document as the
+same schema and cannot distinguish `NOT_APPLICABLE` from `NOT_FOUND`.
+
+The current DGX Spark configuration MAY remain as a controlled station/profile
+scope while the open-set capability is developed.
+
+### Closed-set document classifier
+
+Rejected because it forces unseen documents into an existing class. A high
+classifier score would not establish that the selected business policy is
+correct.
+
+### VLM/LLM as the sole interpreter
+
+Rejected as the sole production authority because semantic mappings and
+validation outcomes would be difficult to bound and audit. A VLM/LLM MAY be
+used later to assist human review or profile drafting, but it MUST NOT be the
+only authority for automated business `PASS`.
+
+### Open-set recognition with incremental profiles
+
+Recommended because it preserves unknown evidence, separates technical
+recognition from business semantics, and allows the approved document catalog
+to grow over time without forced classification.
 
 ## Open decisions for business discussion
 
-The following items must be resolved before implementation of the new policy:
+The following decisions remain intentionally open:
 
-1. Which document families are in scope: product labels, shipping labels,
-   packing lists, invoices, or other documents?
-2. What is the business meaning of `NVIDIA P/N`, `Customer P/N`, and `Our P/N`?
-3. Which fields are required for each approved document family/variant?
-4. Is a document with an unknown type allowed to continue physically, or must
-   the station stop until human review?
-5. Can one camera frame contain multiple documents?
-6. Should multiple documents be processed independently or rejected as a
-   station condition?
-7. What evidence-retention period is needed for unknown documents?
-8. Which profile and confidence thresholds are acceptable for automated `PASS`?
+1. Which document families are in scope for the first business workflow?
+2. What are the business meanings of `NVIDIA P/N`, `Customer P/N`, and `Our
+   P/N`?
+3. Which fields are required, optional, or not applicable for each approved
+   document variant?
+4. What should the station do when localization finds multiple documents?
+5. Should multiple documents be processed independently, held, reviewed, or
+   rejected?
+6. Which recognition threshold is sufficient to classify a document as
+   `KNOWN`?
+7. Which conditions permit automated `PASS` versus `REVIEW`?
+8. How long should unknown-document evidence be retained?
 
-## Implementation guardrails
+## Guardrails
 
 Until this ADR is accepted and the business mappings are confirmed:
 
-- do not treat the global DGX Spark field list as valid for every customer
-  document;
-- do not map `NVIDIA P/N` to `customer_part_number` as a production fact;
-- preserve source labels and raw values;
-- return `REVIEW` for unknown or ambiguous document identity;
-- do not use an unapproved profile to produce automated `PASS`;
-- keep the current fixed-ROI POC behavior explicitly scoped to its controlled
-  station configuration.
+- unknown documents MUST NOT be forced into a known profile;
+- unknown and ambiguous recognition MUST result in `REVIEW`;
+- an unapproved profile MUST NOT produce automated `PASS`;
+- `NVIDIA P/N` MUST NOT be mapped to `customer_part_number` as a production
+  fact;
+- raw observations MUST be preserved when semantic mapping is unresolved;
+- the canonical vocabulary MUST remain extensible;
+- Fixed ROI MAY remain a station-specific optimization, but MUST NOT be the
+  only architectural assumption;
+- VLM/LLM output MUST NOT be the sole production authority;
+- technical `ERROR` MUST remain distinct from business `FAIL`;
+- required fields MUST come from the approved document profile, not a global
+  list applied to every customer document;
+- recognition confidence MUST remain distinct from business confidence.
 
-## Current conclusion
+## Current project impact
 
-The system should evolve from a closed, fixed-label pipeline into an open-set
-document ingestion and recognition pipeline. The first production-safe goal is
-not to understand every unseen document automatically. It is to detect and
-preserve unseen documents, classify known documents only when evidence is
-adequate, and build approved profiles over time without inventing business
-semantics.
+This ADR changes documentation and architectural direction only. It does not
+change the current runtime pipeline, OCR/barcode threading, camera acquisition,
+FixedROI behavior, Local Spool behavior, database schema, authentication, or
+ERP integration.
 
-No runtime code, database schema, authentication flow, or ERP integration is
-changed by this ADR.
+The current manual POC therefore continues to be understood as a controlled
+known-profile flow. Any future runtime change must be proposed and verified in
+separate implementation work after this ADR is accepted and the required
+business policies are available.

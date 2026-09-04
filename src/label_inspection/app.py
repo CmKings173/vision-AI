@@ -64,18 +64,26 @@ def build_processor(config: Settings = settings) -> InspectionProcessor:
 
     profile = normalize_profile(config.extraction_profile)
     extractor = build_extractor(profile)
-    # A named profile that still carries semantic blockers is evidence-capable
-    # but not eligible to authorize an automated business PASS.
-    profile_enabled = extractor.profile_name is not None
-    profile_approved = profile_enabled and not bool(extractor.semantic_blockers)
+    # Approval is an explicit profile contract state. It must never be
+    # inferred from the absence of semantic blockers.
+    profile_binding = extractor.profile_binding
+    profile_approved = profile_binding.allows_automated_pass
+
+    if profile_approved:
+        # Phase 1 has no approved-profile resolver yet. In particular, the
+        # process-wide VISION_REQUIRED_FIELDS / VISION_BARCODE_REQUIRED values
+        # are not profile-owned policy and must never authorize a named
+        # profile. Fail startup until a later profile boundary supplies its
+        # own reviewed validation policy together with the approved binding.
+        raise ValueError(
+            "approved profile requires a profile-owned validation policy"
+        )
 
     validator = LabelValidator(
-        required_fields=config.required_fields if profile_enabled else (),
-        barcode_required=config.barcode_required,
+        required_fields=(),
+        barcode_required=False,
         min_field_confidence=config.ocr_confidence,
-        profile_name=extractor.profile_name,
-        profile_version=extractor.profile_version,
-        profile_approved=profile_approved,
+        profile_binding=profile_binding,
     )
     ocr_name = config.ocr_engine.strip().lower().replace("_", "-")
     if ocr_name == "ppocr-v6":

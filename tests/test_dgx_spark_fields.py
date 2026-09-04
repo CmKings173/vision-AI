@@ -5,7 +5,7 @@ from label_inspection.extraction.profiles import (
 from label_inspection.schemas import OCRLine
 
 
-def test_dgx_spark_profile_extracts_only_label_business_fields():
+def test_unapproved_dgx_profile_does_not_emit_canonical_business_fields():
     lines = [
         OCRLine("Customer Part Number: 699-12345-0000-000", 0.98),
         OCRLine("S/O NO: SO-20260822-01", 0.97),
@@ -21,16 +21,7 @@ def test_dgx_spark_profile_extracts_only_label_business_fields():
     extracted = extractor.extract(lines, source="ppocr_v6")
 
     assert extractor.fields == DGX_SPARK_LABEL_FIELDS
-    assert set(extracted) == set(DGX_SPARK_LABEL_FIELDS)
-    assert extracted["customer_part_number"].value == "699-12345-0000-000"
-    assert extracted["so_number"].value == "SO-20260822-01"
-    assert extracted["our_part_number"].value == "DGX-SPARK-001"
-    assert extracted["quantity"].value == "2"
-    assert extracted["net_weight"].value == "12.5 KG"
-    assert extracted["gross_weight"].value == "15.0 KG"
-    assert extracted["carton_number"].value == "3/10"
-    assert "tracking_number" not in extracted
-    assert "order_id" not in extracted
+    assert extracted == {}
 
 
 def test_dgx_spark_profile_does_not_invent_missing_fields():
@@ -39,8 +30,7 @@ def test_dgx_spark_profile_does_not_invent_missing_fields():
         source="ppocr_v6",
     )
 
-    assert all(item.value is None for item in extracted.values())
-    assert all(item.reason == "NOT_FOUND" for item in extracted.values())
+    assert extracted == {}
 
 
 def test_dgx_spark_profile_maps_split_label_value_lines_and_label_aliases():
@@ -63,12 +53,7 @@ def test_dgx_spark_profile_maps_split_label_value_lines_and_label_aliases():
         source="ppocr_v6",
     )
 
-    assert extracted["customer_part_number"].value == "940-54242-0006-000"
-    # The label has both a Carton ID and a C/NO.; carton_number maps to C/NO.
-    assert extracted["carton_number"].value == "B0027"
-    assert extracted["quantity"].value == "2"
-    assert extracted["net_weight"].value == "5.240"
-    assert extracted["gross_weight"].value == "7.240"
+    assert extracted == {}
 
 
 def test_dgx_spark_profile_preserves_alias_and_declares_semantic_blocker():
@@ -78,7 +63,7 @@ def test_dgx_spark_profile_preserves_alias_and_declares_semantic_blocker():
         source="ppocr_v6",
     )
 
-    assert extracted["customer_part_number"].value == "940-54242-0006-000"
+    assert extracted == {}
     assert extractor.profile_name == "dgx_spark_label"
     assert extractor.profile_version
     assert extractor.semantic_blockers["customer_part_number"].startswith(
@@ -96,4 +81,4 @@ def test_dgx_spark_profile_does_not_capture_customer_part_label_as_value():
         source="ppocr_v6",
     )
 
-    assert extracted["customer_part_number"].value == "126X600000A"
+    assert extracted == {}

@@ -232,7 +232,7 @@ class Settings:
     )
     required_fields: tuple[str, ...] = field(default_factory=lambda: _required_fields())
     extraction_profile: str = field(
-        default_factory=lambda: os.getenv("VISION_EXTRACTION_PROFILE", "default")
+        default_factory=lambda: os.getenv("VISION_EXTRACTION_PROFILE", "none")
     )
     barcode_required: bool = field(
         default_factory=lambda: _bool("VISION_BARCODE_REQUIRED", False)
@@ -452,7 +452,7 @@ class Settings:
         }:
             raise ValueError(
                 "VISION_EXTRACTION_PROFILE must be 'default', 'none', "
-                "'unprofiled', or 'dgx_spark_label'"
+                "'unprofiled', 'dgx_spark', or 'dgx_spark_label'"
             )
 
     def validate_phase2_transport(self) -> None:

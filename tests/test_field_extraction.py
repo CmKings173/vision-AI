@@ -1,10 +1,22 @@
-from label_inspection.extraction.fields import FieldExtractor
+from label_inspection.contracts import APPROVED_FOR_AUTOMATED_PASS, ProfileBinding
 from label_inspection.extraction.evidence import collect_evidence
+from label_inspection.extraction.fields import FieldExtractor
 from label_inspection.schemas import BarcodeResult, OCRLine, RawOCRResult
 
 
+def _approved_extractor(fields):
+    return FieldExtractor(
+        fields=fields,
+        profile_binding=ProfileBinding(
+            name="test-profile",
+            version="1.0",
+            approval_status=APPROVED_FOR_AUTOMATED_PASS,
+        ),
+    )
+
+
 def test_field_extractor_keeps_line_evidence_and_confidence():
-    fields = FieldExtractor(fields=("sku", "lot")).extract(
+    fields = _approved_extractor(("sku", "lot")).extract(
         [
             OCRLine("SKU: ABC123", 0.91),
             OCRLine("LOT NO: L-42", 0.88),
@@ -18,12 +30,12 @@ def test_field_extractor_keeps_line_evidence_and_confidence():
 
 def test_field_extractor_preserves_raw_ocr_text():
     line = OCRLine("SKU: ABC 123", 0.91)
-    FieldExtractor(fields=("sku", "lot")).extract([line], source="ppocr")
+    _approved_extractor(("sku", "lot")).extract([line], source="ppocr")
     assert line.text == "SKU: ABC 123"
 
 
 def test_field_extractor_reports_parse_miss_separately_from_ocr_lines():
-    fields = FieldExtractor(fields=("sku", "lot")).extract([OCRLine("ABC123", 0.99)])
+    fields = _approved_extractor(("sku", "lot")).extract([OCRLine("ABC123", 0.99)])
     assert fields["sku"].value is None
     assert fields["sku"].reason == "NOT_FOUND"
 

@@ -5,7 +5,12 @@ import pytest
 
 from label_inspection.camera.frame_buffer import FrameBuffer
 from label_inspection.camera.selector import FrameSelector
-from label_inspection.contracts import DeliveryStatus
+from label_inspection.contracts import (
+    APPROVED_FOR_AUTOMATED_PASS,
+    DeliveryStatus,
+    DocumentRecognitionResult,
+    ProfileBinding,
+)
 from label_inspection.detection.fixed_roi import FixedROIDetector
 from label_inspection.extraction.fields import FieldExtractor
 from label_inspection.messaging import (
@@ -83,7 +88,18 @@ class _NoopRetryPublisher:
         raise AssertionError("successful E2E processing must not retry")
 
 
-def test_station_to_worker_local_contract_integration(tmp_path):
+@pytest.mark.parametrize(
+    ("requested_profile", "expected_status"),
+    [
+        ({"name": "test-profile", "version": "1.0"}, "PASS"),
+        (None, "REVIEW"),
+    ],
+)
+def test_station_to_worker_local_contract_integration(
+    tmp_path,
+    requested_profile,
+    expected_status,
+):
     frame_buffer = FrameBuffer(max_size=4, window_ms=1000)
     frame_buffer.append(
         FramePacket(
@@ -120,7 +136,7 @@ def test_station_to_worker_local_contract_integration(tmp_path):
         station_id="STATION-01",
         camera_id="PHONE-01",
         provenance={
-            "requested_profile": {"name": "default", "version": "1.0"},
+            "requested_profile": requested_profile,
             "producer": {"locator_version": "fixed-roi.v1"},
         },
     )
@@ -139,15 +155,33 @@ def test_station_to_worker_local_contract_integration(tmp_path):
     assert capture.messages[0]["body"] == local.record.frozen_job_bytes()
 
     ocr = _ResidentOCR()
-    processor = InspectionProcessor(
-        ocr=ocr,
-        barcode=_ResidentBarcode(),
-        extractor=FieldExtractor(fields=("sku",)),
-        validator=LabelValidator(
+    if requested_profile is None:
+        extractor = FieldExtractor.unprofiled()
+        validator = LabelValidator()
+    else:
+        extractor = FieldExtractor(
+            fields=("sku",),
+            profile_binding=ProfileBinding(
+                name="test-profile",
+                version="1.0",
+                approval_status=APPROVED_FOR_AUTOMATED_PASS,
+            ),
+        )
+        validator = LabelValidator(
             required_fields=("sku",),
             profile_name="test-profile",
             profile_version="1.0",
             profile_approved=True,
+        )
+    processor = InspectionProcessor(
+        ocr=ocr,
+        barcode=_ResidentBarcode(),
+        extractor=extractor,
+        validator=validator,
+        document_recognition=(
+            DocumentRecognitionResult.known(extractor.profile_binding)
+            if requested_profile is not None
+            else None
         ),
     )
     worker = InferenceWorker(processor=processor, store=store)
@@ -182,6 +216,14 @@ def test_station_to_worker_local_contract_integration(tmp_path):
             )
         )
     )
-    assert result["business_status"] == "PASS"
-    assert result["result_payload"]["inspection"]["extracted"]["sku"]["value"] == "PHASE2-E2E"
-    assert result["result_payload"]["inspection"]["barcode"]["format"] == "DataMatrix"
+    assert result["business_status"] == expected_status
+    inspection = result["result_payload"]["inspection"]
+    if expected_status == "PASS":
+        assert inspection["extracted"]["sku"]["value"] == "PHASE2-E2E"
+    else:
+        assert inspection["extracted"] == {}
+        assert [item["text"] for item in inspection["evidence"]] == [
+            "SKU: PHASE2-E2E",
+            "DM-PHASE2",
+        ]
+    assert inspection["barcode"]["format"] == "DataMatrix"

@@ -1,4 +1,11 @@
-# Vision-AI — Current System Architecture
+# Vision-AI - Current System Architecture
+
+> **Open-set safety correction (2026-09-04):** Draft profile aliases, including
+> `NVIDIA P/N -> customer_part_number`, are not production mappings. The
+> current factory has no approved profile or trusted document recognition, so
+> it preserves OCR/barcode evidence, emits `extracted = {}`, and returns
+> `REVIEW` after successful technical processing. Section 40 supersedes older
+> closed-profile descriptions elsewhere in this historical snapshot.
 
 > **Tài liệu source of truth cho trạng thái hiện tại của repository**
 >
@@ -15,7 +22,7 @@ Mục tiêu hiện tại gồm hai lớp:
 1. **Local synchronous POC** để kiểm tra nhanh ảnh/RTSP bằng một process. Nó giữ frame trong memory, nhận manual trigger, chạy pipeline và in JSON/debug artifacts.
 2. **Phase 2 production foundation** để tách station capture/preparation khỏi worker inference bằng Local Spool, MinIO và RabbitMQ. Đây là nền tảng phân tách durability/delivery, chưa phải hệ thống HA hoặc production acceptance hoàn chỉnh.
 
-Hệ thống không tự suy đoán quan hệ business giữa `Nvidia P/N`, `Customer Part Number` và `Our Part Number`. Production extractor hiện vẫn có alias `NVIDIA P/N` vào `customer_part_number`, nhưng mapping này được ghi là `KNOWN_SEMANTIC_BLOCKER / NEEDS_BUSINESS_CONFIRMATION` và chưa được coi là production-verified trong đánh giá.
+Hệ thống không tự suy đoán quan hệ business giữa `Nvidia P/N`, `Customer Part Number` và `Our Part Number`. Alias `NVIDIA P/N -> customer_part_number` chỉ tồn tại trong profile DGX dạng draft và bị chặn khỏi production output vì profile chưa được business phê duyệt.
 
 ## 2. Phạm vi hiện tại và trạng thái
 
@@ -356,7 +363,7 @@ carton_number
 
 Regex hiện nhận các label như `S/O NO`, `OUR PART NO`, `Q'TY`, `N.W`, `G.W`, `C/NO`; adjacent lines cho phép giá trị nằm ở dòng kế tiếp. `Carton ID` không nằm trong alias `carton_number` hiện tại.
 
-`customer_part_number` hiện có alias `NVIDIA P/N`. Đây là behavior production hiện tại nhưng semantics chưa được business confirm; raw OCR vẫn cần giữ line `Nvidia P/N` để trace. Chưa có field `nvidia_part_number`, và tài liệu này không tự tạo mapping mới.
+Draft DGX pattern có alias `NVIDIA P/N -> customer_part_number`, nhưng đây không phải behavior semantic production. Runtime hiện chỉ giữ line `Nvidia P/N` như raw evidence và không phát hành canonical field này. Chưa có field `nvidia_part_number`, và tài liệu này không tự tạo mapping mới.
 
 Numeric/weight runtime hiện chủ yếu giữ value dạng string; evaluation có normalization rule riêng, nhưng domain model chưa biến thành typed quantity xuyên suốt pipeline.
 
@@ -372,9 +379,7 @@ Numeric/weight runtime hiện chủ yếu giữ value dạng string; evaluation 
 - Hard failure → `FAIL`; review reasons → `REVIEW`; không có issue → `PASS`.
 - Phase 2 technical `ERROR` giữ business status null; business `PASS/REVIEW/FAIL` chỉ dùng cho completed result.
 
-Một hạn chế wiring hiện tại: profile có `field_patterns`, nhưng `app.build_processor()` chỉ truyền required fields, barcode_required và min confidence vào validator; regex format profile chưa được truyền để post-validate đầy đủ DGX field format.
-
-Required fields mặc định trong Settings là `sku`; manual DGX flow override về profile tuple. Đây là khác biệt cần nhớ khi chạy CLI khác nhau.
+Profile regex chưa được truyền vào validator để post-validate đầy đủ DGX field format. Đồng thời, `app.build_processor()` không dùng required fields hoặc barcode policy toàn cục làm policy cho approved profile. Vì Phase 1 chưa có profile-owned policy resolver, factory sẽ fail startup nếu một profile bị đánh dấu approved.
 
 ## 19. Processing State Machine
 
@@ -416,7 +421,7 @@ preparation/quality
                                     PASS           REVIEW          FAIL
 ```
 
-`PASS` không có nghĩa là OCR tuyệt đối đúng nếu required schema/profile không đầy đủ hoặc business mapping chưa được confirm. Đặc biệt alias `Nvidia P/N -> customer_part_number` là semantic blocker, phải được thể hiện trong provenance/evaluation interpretation.
+`PASS` chỉ hợp lệ khi profile được phê duyệt, document recognition là `KNOWN` và toàn bộ policy của profile đã được đánh giá thành công. Nếu schema/policy chưa đầy đủ hoặc business mapping chưa được xác nhận thì kết quả phải là `REVIEW`, không được hạ điều kiện để tạo `PASS`.
 
 ## 21. Delivery và persistence states
 
@@ -453,8 +458,8 @@ LOCAL_ONLY -> ARTIFACTS_READY -> TERMINAL_RESULT_DURABLE
 | Crop exception | crop | `CROP_FAILED` | terminal technical error |
 | Quality rejected | quality | no OCR/barcode, `REVIEW` | terminal `COMPLETED/REVIEW`, no inference job |
 | OCR import/load fail | OCR | OCR failed/error | worker not ready hoặc retryable readiness error |
-| OCR runtime fail | OCR | stage failed, technical/error result | worker disposition theo retry policy |
-| ZXing unavailable | barcode | barcode stage error/validation review | worker error policy |
+| OCR runtime fail | OCR | stage failed, technical/error result | durable `ERROR`, business null, ACK after persistence |
+| ZXing unavailable | barcode | technical barcode failure | durable `ERROR`, business null, ACK after persistence |
 | Required field missing | validator | `REVIEW` | completed result with review |
 | Barcode invalid | validator | `FAIL` | completed result with fail |
 | Spool capacity exceeded | durability | reject/backpressure before commit | no data loss claim; caller must retry/alert |
@@ -643,9 +648,9 @@ Có scripts kiểm CUDA/model load, OCR/ZXing và POC phone RTSP. Một artifact
 2. YOLO detector vẫn `EXPERIMENTAL`; recall, camera pose, threshold và 50-attempt acceptance chưa chốt.
 3. Local POC event id `INS-...` không đồng nhất canonical UUID Phase 2.
 4. OCR và ZXing đã có parallel stage path; OCR được giữ trên caller/warmup thread còn ZXing chạy background. Actual native-library speedup vẫn cần benchmark GX10, vì Python-level concurrency không tự chứng minh hai thư viện luôn release GIL/không serialize nội bộ.
-5. Profile regex chưa được wire vào validator qua `build_processor()`.
+5. Profile-owned validation-policy resolver chưa được implement; approved profile hiện fail startup.
 6. Weight/numeric values còn string ở runtime domain; normalization chủ yếu thuộc evaluation.
-7. `NVIDIA P/N -> customer_part_number` là known semantic blocker cần business confirmation.
+7. Draft alias `NVIDIA P/N -> customer_part_number` vẫn cần business confirmation và không được phát hành trong production output.
 8. `MinioArtifactStore` dùng private `_put_object`; real runtime chưa verify.
 9. Quality thresholds và candidate scoring là provisional/heuristic, chưa camera-calibrated.
 10. Chỉ worker có systemd unit; station chưa có supervisor.
@@ -840,37 +845,108 @@ InspectionJob
   artifacts:
     label_crop: {bucket, deterministic-key, sha256, size_bytes}
   provenance:
+    profile_contract_version: profile-binding.v2
     producer:
       locator_version: fixed-roi.v1 or ultralytics-yolo.v1
       locator: {type, support_level, model_sha256/roi, device, thresholds, class_mapping}
-    ocr: {engine: ppocr_v6, backend: transformers, profile}
-    extractor_profile: dgx_spark_label
-    semantic_mapping: KNOWN_SEMANTIC_BLOCKER
+    requested_profile: null or {name, version}
         |
         v
 Worker processing
   label_crop -> OCR lines + confidence
               -> ZXing items (DataMatrix/other formats)
-              -> extracted fields
+              -> profile-independent evidence
+              -> canonical fields only when approval_status is APPROVED_FOR_AUTOMATED_PASS
+                 and a trusted document-recognition result exists
               -> LabelValidator
         |
         v
 InspectionResult
   schema: inspection-result.v1
-  processing_status: COMPLETED
-  business_status: PASS | REVIEW | FAIL
-  inference_executed: true
+  processing_status: COMPLETED | ERROR
+  business_status: PASS | REVIEW | FAIL | null (when processing_status=ERROR)
+  inference_executed: true | false
   result_payload:
-    raw_ocr: <all OCR lines/evidence>
-    fields: <profile fields; missing may be null>
-    barcode: <selected + all detected items>
-    quality: <observations>
+    inspection:
+      raw_ocr: <all OCR lines>
+      evidence: <profile-independent OCR/barcode observations>
+      extracted: <canonical fields only for an authorized semantic path; otherwise empty>
+      barcode: <selected + all detected items>
+      quality: <observations>
+      validation: <business outcome and reasons>
+    worker_runtime_provenance:
+      profile: {name, version, approval_status}
+      document_recognition: null or {status, reason, profile_binding}
+      trusted_document_recognition: <derived backward-compatible boolean>
   error: null
 ```
 
 Local POC có thể dùng `event_id=INS-35D1B792664A` và local `InspectionResult` shape; đó là compatibility path, không phải Phase 2 canonical example. Raw OCR và barcode evidence phải được giữ để phân biệt detector success, OCR success, extraction mapping và validator decision.
 
-## 40. Glossary
+## 40. Open-set runtime clarification
+
+The runtime policy implemented after this architecture snapshot is:
+
+```text
+capture/preparation -> OCR + barcode -> immutable evidence inventory
+                                      |
+                                      +-- profile-free or unapproved
+                                      |      -> fields = {}
+                                      |      -> REVIEW + NO_APPROVED_PROFILE
+                                      |
+                                      +-- approved but UNKNOWN/AMBIGUOUS/unrecognized
+                                      |      -> fields = {}
+                                      |      -> REVIEW + NO_TRUSTED_DOCUMENT_RECOGNITION
+                                      |
+                                      +-- explicitly approved profile + trusted recognition
+                                             -> semantic extraction
+                                             -> profile-owned validation
+                                             -> PASS / REVIEW / FAIL
+
+                                      +-- OCR/barcode/runtime failure
+                                             -> ERROR + business_status=null
+```
+
+The current DGX Spark patterns, including the proposed `NVIDIA P/N` alias,
+remain draft analysis definitions. They are not a production semantic
+mapping. A high OCR score proves only that the text was observed clearly; it
+does not prove the business meaning of that text.
+
+The earlier field-extractor description in this snapshot is historical. In the
+current runtime, the draft patterns do not emit canonical fields unless the
+profile is approved and a matching `DocumentRecognitionResult` with status
+`KNOWN` is supplied. The current application factory supplies no such result,
+so a named profile remains evidence-only and returns `REVIEW`.
+
+The durable worker boundary repeats the authorization check before publishing
+business state. Even if a custom processor returns canonical fields or
+`PASS`/`FAIL`, the worker clears those fields and forces `REVIEW` unless its
+startup descriptor contains the same approved profile and `KNOWN` recognition
+binding. It also replaces untrusted semantic reasons with the worker-owned
+profile/recognition gate reason. Before each new inference, the worker
+re-derives that descriptor;
+drift is persisted as technical `WORKER_RUNTIME_DRIFT` with
+`inference_executed=false`.
+
+Worker provenance persists the complete `document_recognition` contract so
+`UNKNOWN`, `AMBIGUOUS`, and absent recognition remain distinguishable. The
+older `trusted_document_recognition` boolean remains only as a derived
+compatibility field.
+
+The process-wide `VISION_REQUIRED_FIELDS` and `VISION_BARCODE_REQUIRED`
+settings are not accepted as policy for an approved profile. Because Phase 1
+does not yet implement a profile-owned validation-policy resolver, the current
+factory rejects an approved profile at startup rather than inheriting those
+global values.
+
+`ProfileBinding` is the single identity/approval value shared by extractor,
+validator, processor, and worker provenance. Its approval is explicit and is
+never inferred from an empty semantic-blocker list. The v2 worker accepts the
+legacy `default/1.0` request only as a safe profile-free migration alias. New
+station jobs with `requested_profile: null` must not be routed to pre-v2
+workers.
+
+## 41. Glossary
 
 | Term | Nghĩa trong hệ thống |
 |---|---|

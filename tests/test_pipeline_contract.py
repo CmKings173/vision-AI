@@ -1,8 +1,14 @@
 import json
 import time
+
 import pytest
 
 from label_inspection.camera.selector import FrameSelector
+from label_inspection.contracts import (
+    APPROVED_FOR_AUTOMATED_PASS,
+    DocumentRecognitionResult,
+    ProfileBinding,
+)
 from label_inspection.detection.fixed_roi import FixedROIDetector
 from label_inspection.extraction.fields import FieldExtractor
 from label_inspection.pipeline.inspection import InspectionPipeline
@@ -53,7 +59,14 @@ def test_vertical_slice_runs_once_for_selected_crop_and_emits_json():
         detector=FixedROIDetector((0.05, 0.05, 0.95, 0.95)),
         ocr=ocr,
         barcode=barcode,
-        extractor=FieldExtractor(fields=("sku", "lot")),
+        extractor=FieldExtractor(
+            fields=("sku", "lot"),
+            profile_binding=ProfileBinding(
+                name="test-profile",
+                version="1.0",
+                approval_status=APPROVED_FOR_AUTOMATED_PASS,
+            ),
+        ),
         validator=LabelValidator(
             required_fields=("sku",),
             profile_name="test-profile",
@@ -63,6 +76,13 @@ def test_vertical_slice_runs_once_for_selected_crop_and_emits_json():
         selector=FrameSelector(top_k=3, score_fn=lambda frame: 1.0),
         quality_checker=QualityChecker(min_width=10, min_height=10, min_sharpness=10),
         camera_id="PHONE-01",
+        document_recognition=DocumentRecognitionResult.known(
+            ProfileBinding(
+                name="test-profile",
+                version="1.0",
+                approval_status=APPROVED_FOR_AUTOMATED_PASS,
+            )
+        ),
     )
 
     result = pipeline.inspect_frame(sharp_label(), event_id="INS-001")
@@ -145,7 +165,7 @@ def test_barcode_failure_cannot_become_pass_when_ocr_succeeds():
 
     result = pipeline.inspect_frame(sharp_label())
 
-    assert result.validation.status == "REVIEW"
+    assert result.validation.status == "ERROR"
     assert "BARCODE_RUNTIME_ERROR" in result.validation.reasons
 
 
@@ -163,7 +183,14 @@ def test_low_confidence_line_stays_raw_but_business_field_is_reviewed():
     pipeline = InspectionPipeline(
         detector=FixedROIDetector((0.05, 0.05, 0.95, 0.95)),
         ocr=LowConfidenceOCR(),
-        extractor=FieldExtractor(fields=("sku",)),
+        extractor=FieldExtractor(
+            fields=("sku",),
+            profile_binding=ProfileBinding(
+                name="test-profile",
+                version="1.0",
+                approval_status=APPROVED_FOR_AUTOMATED_PASS,
+            ),
+        ),
         validator=LabelValidator(
             required_fields=("sku",),
             profile_name="test-profile",
@@ -172,6 +199,13 @@ def test_low_confidence_line_stays_raw_but_business_field_is_reviewed():
         ),
         selector=FrameSelector(top_k=1),
         quality_checker=QualityChecker(min_sharpness=10),
+        document_recognition=DocumentRecognitionResult.known(
+            ProfileBinding(
+                name="test-profile",
+                version="1.0",
+                approval_status=APPROVED_FOR_AUTOMATED_PASS,
+            )
+        ),
     )
 
     result = pipeline.inspect_frame(sharp_label())

@@ -5,9 +5,11 @@ from typing import ClassVar
 
 import pytest
 
-from label_inspection.app import build_local_spool, build_pipeline
+from label_inspection.app import build_local_spool, build_pipeline, build_processor
 from label_inspection.camera.security import resolve_camera_source
 from label_inspection.config import Settings
+from label_inspection.contracts import APPROVED_FOR_AUTOMATED_PASS, ProfileBinding
+from label_inspection.extraction.fields import FieldExtractor
 from label_inspection.ocr.ppocr_v6 import PPOCRV6TransformersAdapter
 from label_inspection.ocr.tensorrt_ocr import TensorRTOCRAdapter
 
@@ -73,14 +75,42 @@ def test_dgx_profile_keeps_semantic_blocker_and_cannot_authorize_pass():
     assert pipeline.validator.profile_approved is False
 
 
-def test_trained_yolo_detector_is_wired_with_normalized_gpu_device(monkeypatch, tmp_path):
+def test_approved_profile_cannot_inherit_global_validation_policy(monkeypatch):
+    approved_binding = ProfileBinding(
+        name="customer_a",
+        version="1.0",
+        approval_status=APPROVED_FOR_AUTOMATED_PASS,
+    )
+    monkeypatch.setattr(
+        "label_inspection.extraction.profiles.build_extractor",
+        lambda _profile: FieldExtractor(
+            fields=("sku",),
+            profile_binding=approved_binding,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="profile-owned validation policy"):
+        build_processor(
+            valid_settings(
+                extraction_profile="none",
+                required_fields=("sku",),
+                barcode_required=True,
+            )
+        )
+
+
+def test_trained_yolo_detector_is_wired_with_normalized_gpu_device(
+    monkeypatch, tmp_path
+):
     class FakeYOLO:
         names: ClassVar = {0: "shipping_label"}
 
         def __init__(self, path):
             self.path = path
 
-    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO))
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
     model_path = str(tmp_path / "shipping_label_best.pt")
     (tmp_path / "shipping_label_best.pt").write_bytes(b"weights")
 
@@ -118,7 +148,9 @@ def test_yolo_runtime_configuration_is_wired(monkeypatch, tmp_path):
         def __init__(self, path):
             self.path = path
 
-    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO))
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
     weights = tmp_path / "shipping_label.pt"
     weights.write_bytes(b"weights")
     pipeline = build_pipeline(

@@ -11,8 +11,11 @@ import pytest
 
 from label_inspection.camera.selector import FrameSelector
 from label_inspection.contracts import (
+    APPROVED_FOR_AUTOMATED_PASS,
     BusinessStatus,
+    DocumentRecognitionResult,
     ProcessingStatus,
+    ProfileBinding,
     TriggerEvent,
 )
 from label_inspection.detection.fixed_roi import FixedROIDetector
@@ -185,12 +188,26 @@ def test_worker_processor_runs_ocr_and_barcode_concurrently():
     processor = InspectionProcessor(
         ocr=ocr,
         barcode=ConcurrentBarcode(probe),
-        extractor=FieldExtractor(fields=("sku",)),
+        extractor=FieldExtractor(
+            fields=("sku",),
+            profile_binding=ProfileBinding(
+                name="test-profile",
+                version="1.0",
+                approval_status=APPROVED_FOR_AUTOMATED_PASS,
+            ),
+        ),
         validator=LabelValidator(
             required_fields=("sku",),
             profile_name="test-profile",
             profile_version="1.0",
             profile_approved=True,
+        ),
+        document_recognition=DocumentRecognitionResult.known(
+            ProfileBinding(
+                name="test-profile",
+                version="1.0",
+                approval_status=APPROVED_FOR_AUTOMATED_PASS,
+            )
         ),
     )
 
@@ -214,12 +231,26 @@ def test_worker_processor_consumes_the_exact_prepared_crop_without_reconstructio
     processor = InspectionProcessor(
         ocr=ocr,
         barcode=barcode,
-        extractor=FieldExtractor(fields=("sku",)),
+        extractor=FieldExtractor(
+            fields=("sku",),
+            profile_binding=ProfileBinding(
+                name="test-profile",
+                version="1.0",
+                approval_status=APPROVED_FOR_AUTOMATED_PASS,
+            ),
+        ),
         validator=LabelValidator(
             required_fields=("sku",),
             profile_name="test-profile",
             profile_version="1.0",
             profile_approved=True,
+        ),
+        document_recognition=DocumentRecognitionResult.known(
+            ProfileBinding(
+                name="test-profile",
+                version="1.0",
+                approval_status=APPROVED_FOR_AUTOMATED_PASS,
+            )
         ),
     )
 
@@ -239,13 +270,27 @@ def test_pipeline_execution_exposes_pre_inference_crop_snapshot():
         processor=InspectionProcessor(
             ocr=ocr,
             barcode=barcode,
-            extractor=FieldExtractor(fields=("sku",)),
-        validator=LabelValidator(
+            extractor=FieldExtractor(
+                fields=("sku",),
+                profile_binding=ProfileBinding(
+                    name="test-profile",
+                    version="1.0",
+                    approval_status=APPROVED_FOR_AUTOMATED_PASS,
+                ),
+            ),
+            validator=LabelValidator(
             required_fields=("sku",),
             profile_name="test-profile",
             profile_version="1.0",
-            profile_approved=True,
-        ),
+                profile_approved=True,
+            ),
+            document_recognition=DocumentRecognitionResult.known(
+                ProfileBinding(
+                    name="test-profile",
+                    version="1.0",
+                    approval_status=APPROVED_FOR_AUTOMATED_PASS,
+                )
+            ),
         ),
     )
 

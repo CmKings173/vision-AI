@@ -3,13 +3,19 @@ import json
 import struct
 import time
 import uuid
+from dataclasses import replace
 
 import cv2
 import numpy as np
 import pytest
 
 from label_inspection.camera.selector import FrameSelector
-from label_inspection.contracts import TriggerEvent
+from label_inspection.contracts import (
+    APPROVED_FOR_AUTOMATED_PASS,
+    DocumentRecognitionResult,
+    ProfileBinding,
+    TriggerEvent,
+)
 from label_inspection.detection.fixed_roi import FixedROIDetector
 from label_inspection.extraction.fields import FieldExtractor
 from label_inspection.messaging import (
@@ -19,7 +25,16 @@ from label_inspection.messaging import (
 )
 from label_inspection.pipeline.ranking import CandidateScorer
 from label_inspection.preprocessing.quality import QualityChecker
-from label_inspection.schemas import BarcodeResult, FramePacket, OCRLine, RawOCRResult
+from label_inspection.schemas import (
+    BarcodeResult,
+    ExtractedField,
+    FramePacket,
+    InspectionResult,
+    OCRLine,
+    QualityReport,
+    RawOCRResult,
+    ValidationResult,
+)
 from label_inspection.station.dispatcher import OutboxDispatcher
 from label_inspection.station.preparation import StationPreparer
 from label_inspection.station.spool import LocalSpool
@@ -34,8 +49,10 @@ from label_inspection.validation.rules import LabelValidator
 from label_inspection.worker.inference_worker import (
     InferenceWorker,
     WorkerContractError,
+    WorkerResultConflictError,
 )
 from label_inspection.worker.processor import InspectionProcessor
+from label_inspection.worker.provenance import WorkerRuntimeDescriptor
 from tests.fixtures.quality import sharp_label
 
 
@@ -82,6 +99,24 @@ class _Barcode:
                 value="DM-001", format="DataMatrix", valid=True, confidence=1.0
             )
         ]
+
+
+class _RaisingOCR(_OCR):
+    def recognize(self, image):
+        self.recognize_calls += 1
+        raise RuntimeError("simulated OCR runtime failure")
+
+
+class _RaisingBarcode(_Barcode):
+    def decode(self, image):
+        self.decode_calls += 1
+        raise RuntimeError("simulated barcode runtime failure")
+
+
+class _NoBarcode(_Barcode):
+    def decode(self, image):
+        self.decode_calls += 1
+        return []
 
 
 class _Transport:
@@ -131,7 +166,7 @@ def _job(tmp_path):
     record = spool.commit_outcome(
         outcome,
         provenance={
-            "requested_profile": {"name": "default", "version": "1.0"},
+            "requested_profile": {"name": "test-profile", "version": "1.0"},
             "producer": {"locator_version": "fixed-roi.v1"},
         },
     )
@@ -141,18 +176,40 @@ def _job(tmp_path):
     return record.job, record.frozen_job_bytes(), store
 
 
-def _worker(store, ocr=None, barcode=None):
+def _worker(
+    store,
+    ocr=None,
+    barcode=None,
+    *,
+    recognition_status="KNOWN",
+):
     ocr = ocr or _OCR()
     barcode = barcode or _Barcode()
+    profile_binding = ProfileBinding(
+        name="test-profile",
+        version="1.0",
+        approval_status=APPROVED_FOR_AUTOMATED_PASS,
+    )
     processor = InspectionProcessor(
         ocr=ocr,
         barcode=barcode,
-        extractor=FieldExtractor(fields=("sku",)),
+        extractor=FieldExtractor(
+            fields=("sku",),
+            profile_binding=profile_binding,
+        ),
         validator=LabelValidator(
             required_fields=("sku",),
             profile_name="test-profile",
             profile_version="1.0",
             profile_approved=True,
+        ),
+        document_recognition=(
+            None
+            if recognition_status is None
+            else DocumentRecognitionResult(
+                status=recognition_status,
+                profile_binding=profile_binding,
+            )
         ),
     )
     return InferenceWorker(processor=processor, store=store), ocr, barcode
@@ -325,6 +382,401 @@ def test_result_persist_failure_never_acks_delivery(tmp_path):
     assert acked == []
 
 
+def test_ocr_runtime_failure_is_durable_error_and_not_dead_lettered(tmp_path):
+    job, body, store = _job(tmp_path)
+    worker, _, _ = _worker(store, ocr=_RaisingOCR())
+    worker.start()
+    acked = []
+    transport = _Transport()
+
+    disposition = RetryingWorkerMessageHandler(
+        worker=worker,
+        publisher=transport,
+    ).handle(
+        body,
+        message_id=job.event_id,
+        correlation_id=job.event_id,
+        headers={},
+        ack=lambda: acked.append(True),
+    )
+
+    assert disposition is DeliveryDisposition.COMPLETED
+    assert acked == [True]
+    assert all(
+        call["routing_key"] != "inspection.dead"
+        for call in transport.calls
+    )
+    result_key = event_object_keys(
+        station_id=job.station_id,
+        event_id=job.event_id,
+        occurred_at_ms=job.triggered_at_ms,
+    ).result
+    metadata = store.head("vision-inspections", result_key)
+    assert metadata is not None
+    payload = json.loads(
+        store.get_verified(
+            type(job.artifacts["label_crop"])(
+                bucket=metadata.bucket,
+                key=metadata.key,
+                sha256=metadata.sha256,
+                content_type=metadata.content_type,
+                size_bytes=metadata.size_bytes,
+            )
+        )
+    )
+    assert payload["processing_status"] == "ERROR"
+    assert payload["business_status"] is None
+    assert payload["error"]["code"] == "OCR_RUNTIME_ERROR"
+
+
+def test_barcode_runtime_failure_is_durable_error(tmp_path):
+    _job_record, body, store = _job(tmp_path)
+    worker, _, _ = _worker(store, barcode=_RaisingBarcode())
+    worker.start()
+
+    report = worker.process_message(body)
+
+    assert report.durable_result is True
+    assert report.result.processing_status.value == "ERROR"
+    assert report.result.business_status is None
+    assert report.result.error is not None
+    assert report.result.error.code == "BARCODE_RUNTIME_ERROR"
+
+
+def test_unexpected_processor_runtime_failure_is_durable_error(tmp_path):
+    _job_record, body, store = _job(tmp_path)
+    worker, _, _ = _worker(store)
+    worker.start()
+
+    def raise_processing_failure(_prepared):
+        raise RuntimeError("unexpected processing failure")
+
+    worker.processor.process = raise_processing_failure
+
+    report = worker.process_message(body)
+
+    assert report.durable_result is True
+    assert report.result.processing_status.value == "ERROR"
+    assert report.result.business_status is None
+    assert report.result.error is not None
+    assert report.result.error.code == "PROCESSING_RUNTIME_ERROR"
+
+
+def test_invalid_processor_status_is_durable_error_not_dead_lettered(tmp_path):
+    job, body, store = _job(tmp_path)
+    worker, _, _ = _worker(store)
+    worker.start()
+
+    worker.processor.process = lambda _prepared: InspectionResult(
+        event_id=job.event_id,
+        camera_id=job.camera_id,
+        raw_ocr=RawOCRResult(engine="test"),
+        barcode=BarcodeResult(value=None),
+        quality=QualityReport(status="PASS"),
+        validation=ValidationResult(status="NOT_A_BUSINESS_STATUS"),
+    )
+
+    report = worker.process_message(body)
+
+    assert report.result.processing_status.value == "ERROR"
+    assert report.result.business_status is None
+    assert report.result.error is not None
+    assert report.result.error.code == "PROCESSOR_INVALID_STATUS"
+
+
+def test_malformed_processor_result_is_durable_error_not_dead_lettered(tmp_path):
+    job, body, store = _job(tmp_path)
+    worker, _, _ = _worker(store)
+    worker.start()
+    worker.processor.process = lambda _prepared: object()
+
+    acked = []
+    transport = _Transport()
+    disposition = RetryingWorkerMessageHandler(
+        worker=worker,
+        publisher=transport,
+    ).handle(
+        body,
+        message_id=job.event_id,
+        correlation_id=job.event_id,
+        headers={},
+        ack=lambda: acked.append(True),
+    )
+
+    assert disposition is DeliveryDisposition.COMPLETED
+    assert acked == [True]
+    assert all(call["routing_key"] != "inspection.dead" for call in transport.calls)
+
+
+def test_image_decode_runtime_failure_is_durable_error_not_retry_or_dlq(
+    tmp_path, monkeypatch
+):
+    job, body, store = _job(tmp_path)
+    worker, _, _ = _worker(store)
+    worker.start()
+
+    def raise_decode_failure(*_args, **_kwargs):
+        raise RuntimeError("decoder library failure")
+
+    monkeypatch.setattr(
+        "label_inspection.worker.inference_worker.cv2.imdecode",
+        raise_decode_failure,
+    )
+    acked = []
+    transport = _Transport()
+
+    disposition = RetryingWorkerMessageHandler(
+        worker=worker,
+        publisher=transport,
+    ).handle(
+        body,
+        message_id=job.event_id,
+        correlation_id=job.event_id,
+        headers={},
+        ack=lambda: acked.append(True),
+    )
+
+    assert disposition is DeliveryDisposition.COMPLETED
+    assert acked == [True]
+    assert all(call["routing_key"] != "inspection.dead" for call in transport.calls)
+    result_key = event_object_keys(
+        station_id=job.station_id,
+        event_id=job.event_id,
+        occurred_at_ms=job.triggered_at_ms,
+    ).result
+    metadata = store.head("vision-inspections", result_key)
+    assert metadata is not None
+    result_payload = json.loads(
+        store.get_verified(
+            type(job.artifacts["label_crop"])(
+                bucket=metadata.bucket,
+                key=metadata.key,
+                sha256=metadata.sha256,
+                content_type=metadata.content_type,
+                size_bytes=metadata.size_bytes,
+            )
+        )
+    )
+    assert result_payload["processing_status"] == "ERROR"
+    assert result_payload["business_status"] is None
+    assert result_payload["inference_executed"] is False
+    assert result_payload["error"]["code"] == "IMAGE_DECODE_RUNTIME_ERROR"
+
+
+def test_successful_barcode_decode_with_no_value_is_not_a_runtime_error(tmp_path):
+    _job_record, body, store = _job(tmp_path)
+    worker, _, barcode = _worker(store, barcode=_NoBarcode())
+    worker.start()
+
+    report = worker.process_message(body)
+
+    assert barcode.decode_calls == 1
+    assert report.result.processing_status.value == "COMPLETED"
+    assert report.result.business_status is not None
+    assert report.result.result_payload["inspection"]["barcode"]["value"] is None
+
+
+@pytest.mark.parametrize("recognition_status", [None, "UNKNOWN", "AMBIGUOUS"])
+def test_requested_profile_without_known_recognition_cannot_pass(
+    tmp_path, recognition_status,
+):
+    _job_record, body, store = _job(tmp_path)
+    worker, _, _ = _worker(store, recognition_status=recognition_status)
+    worker.start()
+
+    report = worker.process_message(body)
+
+    assert report.result.processing_status.value == "COMPLETED"
+    assert report.result.business_status.value == "REVIEW"
+    assert "NO_TRUSTED_DOCUMENT_RECOGNITION" in report.result.reasons
+
+
+def test_unapproved_custom_validator_cannot_publish_pass(tmp_path):
+    _job_record, body, source_store = _job(tmp_path)
+    payload = json.loads(body)
+    payload["provenance"]["requested_profile"] = None
+    store = _ObservedStore(source_store)
+    processor = InspectionProcessor(ocr=_OCR(), barcode=_Barcode())
+    processor.validator.validate = lambda *_args: ValidationResult(status="PASS")
+    worker = InferenceWorker(processor=processor, store=store)
+    worker.start()
+
+    report = worker.process_message(json.dumps(payload).encode("utf-8"))
+
+    assert report.result.processing_status.value == "COMPLETED"
+    assert report.result.business_status.value == "REVIEW"
+    assert "NO_APPROVED_PROFILE" in report.result.reasons
+    assert report.result.result_payload["inspection"]["extracted"] == {}
+
+
+@pytest.mark.parametrize("forged_status", ["PASS", "FAIL"])
+def test_worker_boundary_blocks_unauthorized_business_decisions_and_fields(
+    tmp_path, forged_status,
+):
+    job, body, source_store = _job(tmp_path)
+    payload = json.loads(body)
+    payload["provenance"]["requested_profile"] = None
+    store = _ObservedStore(source_store)
+    processor = InspectionProcessor(ocr=_OCR(), barcode=_Barcode())
+    processor.process = lambda _prepared: InspectionResult(
+        event_id=job.event_id,
+        camera_id=job.camera_id,
+        raw_ocr=RawOCRResult(engine="test"),
+        extracted={
+            "invented_business_field": ExtractedField(
+                value="invented",
+                confidence=1.0,
+                source="test",
+            )
+        },
+        barcode=BarcodeResult(value="DM-001"),
+        quality=QualityReport(status="PASS"),
+        validation=ValidationResult(
+            status=forged_status,
+            reasons=("FORGED_SEMANTIC_REASON",),
+        ),
+    )
+    worker = InferenceWorker(processor=processor, store=store)
+    worker.start()
+
+    report = worker.process_message(json.dumps(payload).encode("utf-8"))
+
+    assert report.result.processing_status.value == "COMPLETED"
+    assert report.result.business_status.value == "REVIEW"
+    assert report.result.reasons == ("NO_APPROVED_PROFILE",)
+    inspection = report.result.result_payload["inspection"]
+    assert inspection["extracted"] == {}
+    assert inspection["validation"] == {
+        "status": "REVIEW",
+        "reasons": ("NO_APPROVED_PROFILE",),
+    }
+
+
+def test_worker_boundary_clears_unauthorized_fields_from_technical_error(
+    tmp_path,
+):
+    job, body, source_store = _job(tmp_path)
+    payload = json.loads(body)
+    payload["provenance"]["requested_profile"] = None
+    store = _ObservedStore(source_store)
+    processor = InspectionProcessor(ocr=_OCR(), barcode=_Barcode())
+    processor.process = lambda _prepared: InspectionResult(
+        event_id=job.event_id,
+        camera_id=job.camera_id,
+        raw_ocr=RawOCRResult(
+            engine="test",
+            success=False,
+            error_code="OCR_RUNTIME_ERROR",
+        ),
+        extracted={
+            "invented_business_field": ExtractedField(
+                value="invented",
+                confidence=1.0,
+                source="test",
+            )
+        },
+        barcode=BarcodeResult(value=None),
+        quality=QualityReport(status="PASS"),
+        validation=ValidationResult(
+            status="ERROR",
+            reasons=("OCR_RUNTIME_ERROR",),
+        ),
+    )
+    worker = InferenceWorker(processor=processor, store=store)
+    worker.start()
+
+    report = worker.process_message(json.dumps(payload).encode("utf-8"))
+
+    assert report.result.processing_status.value == "ERROR"
+    assert report.result.result_payload["inspection"]["extracted"] == {}
+
+
+def test_worker_detects_runtime_descriptor_drift_before_inference(tmp_path):
+    _job_record, body, store = _job(tmp_path)
+    worker, ocr, barcode = _worker(store)
+    worker.start()
+    worker.processor._document_recognition = None
+
+    report = worker.process_message(body)
+
+    assert report.result.processing_status.value == "ERROR"
+    assert report.result.business_status is None
+    assert report.result.inference_executed is False
+    assert report.result.error is not None
+    assert report.result.error.code == "WORKER_RUNTIME_DRIFT"
+    assert ocr.recognize_calls == 0
+    assert barcode.decode_calls == 0
+
+
+def test_profile_free_job_preserves_evidence_and_is_durable_review(tmp_path):
+    _job_record, body, source_store = _job(tmp_path)
+    payload = json.loads(body)
+    payload["provenance"]["requested_profile"] = None
+    store = _ObservedStore(source_store)
+    processor = InspectionProcessor(ocr=_OCR(), barcode=_Barcode())
+    worker = InferenceWorker(processor=processor, store=store)
+    worker.start()
+
+    report = worker.process_message(json.dumps(payload).encode("utf-8"))
+
+    assert report.durable_result is True
+    assert report.result.business_status.value == "REVIEW"
+    inspection = report.result.result_payload["inspection"]
+    assert inspection["extracted"] == {}
+    assert inspection["evidence"]
+
+
+def test_existing_unauthorized_pass_is_rejected_as_durable_conflict(tmp_path):
+    job, body, source_store = _job(tmp_path)
+    request = json.loads(body)
+    request["provenance"]["requested_profile"] = None
+    body = json.dumps(request).encode("utf-8")
+    store = _ObservedStore(source_store)
+    worker = InferenceWorker(
+        processor=InspectionProcessor(ocr=_OCR(), barcode=_Barcode()),
+        store=store,
+    )
+    worker.start()
+    first = worker.process_message(body)
+    payload = json.loads(store.get_verified(first.result_reference))
+    payload["business_status"] = "PASS"
+    forged_bytes = json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    identity = (first.result_reference.bucket, first.result_reference.key)
+    store._objects[identity] = (
+        ObjectMetadata(
+            bucket=first.result_reference.bucket,
+            key=first.result_reference.key,
+            sha256=hashlib.sha256(forged_bytes).hexdigest(),
+            size_bytes=len(forged_bytes),
+            content_type="application/json",
+        ),
+        forged_bytes,
+    )
+
+    with pytest.raises(WorkerResultConflictError, match="semantic authorization"):
+        worker.process_message(body)
+
+
+def test_runtime_descriptor_mismatch_is_rejected_at_worker_init(tmp_path):
+    _, _, store = _job(tmp_path)
+    worker, _, _ = _worker(store)
+    actual = WorkerRuntimeDescriptor.from_processor(worker.processor)
+    forged = replace(actual, ocr={**actual.ocr, "implementation": "OtherOCR"})
+
+    with pytest.raises(ValueError, match="runtime descriptor"):
+        InferenceWorker(
+            processor=worker.processor,
+            store=store,
+            runtime_descriptor=forged,
+        )
+
+
 def test_checksum_failure_never_runs_inference_and_acks_only_after_dlq(tmp_path):
     job, body, store = _job(tmp_path)
     identity = (job.artifacts["label_crop"].bucket, job.artifacts["label_crop"].key)
@@ -362,14 +814,33 @@ def test_durable_result_keeps_business_payload_and_semantic_provenance(tmp_path)
 
     assert payload["event_id"] == job.event_id
     assert payload["business_status"] == "PASS"
+    assert payload["reasons"] == []
     assert payload["inference_executed"] is True
-    assert payload["result_payload"]["inspection"]["extracted"]["sku"]["value"] == "ABC123"
+    assert (
+        payload["result_payload"]["inspection"]["extracted"]["sku"]["value"]
+        == "ABC123"
+    )
     assert payload["result_payload"]["producer_provenance"] == dict(job.provenance)
     worker_runtime = payload["result_payload"]["worker_runtime_provenance"]
-    assert worker_runtime["pipeline_version"] == "phase2-worker.v1"
+    assert worker_runtime["pipeline_version"] == "phase2-worker.v2"
+    assert worker_runtime["trusted_document_recognition"] is True
+    assert worker_runtime["document_recognition"] == {
+        "status": "KNOWN",
+        "profile_binding": {
+            "name": "test_profile",
+            "version": "1.0",
+            "approval_status": "APPROVED_FOR_AUTOMATED_PASS",
+        },
+        "reason": None,
+    }
+    assert worker_runtime["profile"] == {
+        "name": "test_profile",
+        "version": "1.0",
+        "approval_status": "APPROVED_FOR_AUTOMATED_PASS",
+    }
     assert worker_runtime["ocr"]["implementation"] == "_OCR"
     assert worker_runtime["barcode"]["implementation"] == "_Barcode"
-    assert worker_runtime["extractor"]["profile_name"] == "default"
+    assert worker_runtime["extractor"]["profile_name"] == "test_profile"
     assert worker_runtime["extractor"]["profile_version"] == "1.0"
     assert worker_runtime["validator"]["implementation"] == "LabelValidator"
     timings = payload["result_payload"]["stage_timings"]

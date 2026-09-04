@@ -13,7 +13,7 @@ image/video/phone RTSP
   → select one best label crop
   → ZXing barcode + PP-OCR
   → raw OCR lines
-  → SKU/LOT field extraction
+  → profile-gated semantic field extraction
   → deterministic validation
   → structured JSON
 ```
@@ -38,8 +38,17 @@ the Ultralytics license decision must be completed before commercial deployment.
 - YOLO runtime defaults are `VISION_DETECTOR_CONFIDENCE=0.25`,
   `VISION_DETECTOR_IOU=0.45`, `VISION_DETECTOR_IMGSZ=640`, and
   `VISION_DETECTOR_MAX_DET=10`; the CLI exposes the same four overrides.
-- `VISION_OCR_CONFIDENCE` is a validation threshold: low-confidence lines stay
-  in `raw_ocr.lines` and extracted fields, but force `REVIEW` when required.
+- `VISION_OCR_CONFIDENCE` is a validation threshold for an approved profile:
+  low-confidence lines stay in `raw_ocr.lines` and evidence, but force
+  `REVIEW` when an approved profile requires the affected field.
+- The default `VISION_EXTRACTION_PROFILE=none` is open-set evidence-only.
+  Named profiles are also evidence-only until their binding explicitly has
+  `APPROVED_FOR_AUTOMATED_PASS`; the current DGX Spark profile is still a
+  draft and cannot emit canonical fields or `PASS`. A named profile is only a
+  station hint; semantic extraction additionally requires an explicit,
+  profile-bound `DocumentRecognitionResult` with status `KNOWN`. The current
+  production factory supplies no recognition result, so it remains
+  evidence-only and returns `REVIEW`.
 - Quality thresholds in `.env.example` are provisional engineering defaults,
   not camera-calibrated production values.
 - `VISION_FRAME_PREVIEW_LONG_EDGE` must be 320–640; selection runs on that
@@ -125,11 +134,20 @@ python scripts/run_real_image_integration.py \
   --detector-device gpu:0 \
   --device gpu:0 \
   --extraction-profile dgx_spark_label \
-  --required-fields customer_part_number,so_number,our_part_number,quantity,net_weight,gross_weight,carton_number \
   --warmup 2 --runs 20
 ```
 
-Only when that command returns image `PASS`, run the direct phone-camera path.
+The current DGX Spark profile is not business-approved, so this path is useful
+for OCR/evidence and calibration but is expected to remain `REVIEW` until the
+semantic mappings and validation policy are approved. Only after an approved
+profile, matching `KNOWN` recognition, and target acceptance dataset exist
+should image `PASS` authorize the direct phone-camera path.
+
+The current draft profile cannot satisfy that business `PASS` gate. You may
+still run the direct phone-camera path for camera, OCR, barcode, evidence, and
+latency calibration, but its `REVIEW` result is not a production acceptance
+decision.
+
 The existing IP Cam app supplies the URL; no MediaMTX or intermediate relay is
 needed. `RTSPCamera` passes the URL to OpenCV, so both RTSP and HTTP camera
 URLs are accepted when the GX10 OpenCV/FFmpeg build supports that stream:
@@ -194,11 +212,11 @@ python scripts/camera_smoke.py --source "$VISION_RTSP_URL" \
   --max-frames 10 --timeout-s 15
 ```
 
-These commands print JSON evidence for OCR lines, the DGX Spark label fields
-(`customer_part_number`, `so_number`, `our_part_number`, `quantity`,
-`net_weight`, `gross_weight`, `carton_number`), barcode format/value/validity/
-position, selected frame/crop score, artifact paths, and timings. The 10-trigger
-benchmark excludes model load/warmup time. Unit or mock tests do not
+These commands print JSON evidence for OCR lines, barcode format/value/validity/
+position, selected frame/crop score, artifact paths, and timings. The DGX Spark
+field names are draft analysis only; the current unapproved runtime preserves
+their source text as evidence and emits no canonical business fields. The
+10-trigger benchmark excludes model load/warmup time. Unit or mock tests do not
 count as GX10 verification. ONNX, Paddle2ONNX, TensorRT, GLM-OCR, Redis,
 GigE, custom YOLO/training, ERP, and scale changes are frozen in this path.
 
@@ -243,8 +261,12 @@ export VISION_OCR_CHAR_DICT=models/ppocr/ppocr_keys_v1.txt
 
 The adapter currently expects the standard split PP-OCR DB detection and CTC
 recognition outputs. It keeps raw OCR lines and profile-independent evidence in
-the result schema. A named profile is required for semantic field extraction;
-without one, the result is preserved for review and cannot become `PASS`.
+the result schema. Semantic field extraction is gated by the explicit profile
+binding and a trusted document-recognition result: a profile-free, unapproved,
+or unrecognized document produces no canonical fields and a `REVIEW` outcome
+after successful technical processing. OCR confidence never becomes semantic
+confidence. A technical OCR/barcode/runtime failure is a durable `ERROR` with
+`business_status=null`, not a business `REVIEW` and not a contract DLQ.
 
 Detector and transport dependencies are independent and are not needed for
 the FixedROI + PP-OCR + ZXing vertical slice. Install `.[detector]` when
@@ -284,5 +306,25 @@ tests and target acceptance dataset have actually passed.
 
 ## Result contract
 
-Every inspection keeps both `raw_ocr.lines` and `extracted` fields so an OCR
-mistake can be distinguished from a SKU/LOT parsing mistake.
+Every inspection keeps `raw_ocr.lines`, barcode observations, and evidence
+before semantic interpretation. `extracted` contains canonical fields only
+when the profile binding is explicitly approved; otherwise it is empty, so a
+new or ambiguous document remains ingestible without invented business
+meaning.
+
+## Open-set profile rollout
+
+The station sends `requested_profile: null` for profile-free operation. A v2
+worker records one shared profile binding in provenance and returns evidence-
+only `REVIEW` for unknown or unapproved documents. Deploy the v2 worker before
+switching stations to the null profile contract; v2 workers may safely accept
+the legacy `default/1.0` request as an evidence-only migration alias, while
+pre-v2 workers must not receive the new profile-free jobs.
+
+The durable worker repeats this semantic authorization check before persisting
+a business result and records the complete `document_recognition` contract in
+runtime provenance. Runtime identity drift after startup becomes a durable
+technical `WORKER_RUNTIME_DRIFT` error before inference. Global
+`VISION_REQUIRED_FIELDS` and `VISION_BARCODE_REQUIRED` values are not treated
+as approved-profile policy; until a profile-owned policy resolver exists, the
+factory rejects any profile marked for automated decisions.

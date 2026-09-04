@@ -15,6 +15,7 @@ import numpy as np
 from ..contracts import (
     ArtifactRef,
     BusinessStatus,
+    InspectionError,
     InspectionJob,
     ProcessingStatus,
     epoch_ms_now,
@@ -99,9 +100,13 @@ class InferenceWorker:
         self.artifact_policy = artifact_policy or ArtifactKeyPolicy(
             bucket="vision-inspections"
         )
-        self.runtime_descriptor = (
-            runtime_descriptor or WorkerRuntimeDescriptor.from_processor(processor)
-        )
+        derived_runtime_descriptor = WorkerRuntimeDescriptor.from_processor(processor)
+        if (
+            runtime_descriptor is not None
+            and runtime_descriptor != derived_runtime_descriptor
+        ):
+            raise ValueError("runtime descriptor does not match processor")
+        self.runtime_descriptor = derived_runtime_descriptor
         for name, value in (
             ("max_job_message_bytes", max_job_message_bytes),
             ("max_image_pixels", max_image_pixels),
@@ -169,6 +174,25 @@ class InferenceWorker:
                 end_to_end_ms=float(max(0, epoch_ms_now() - job.triggered_at_ms)),
             )
 
+        try:
+            current_runtime_descriptor = WorkerRuntimeDescriptor.from_processor(
+                self.processor
+            )
+        except Exception:  # noqa: BLE001 - runtime integrity boundary
+            current_runtime_descriptor = None
+        if current_runtime_descriptor != self.runtime_descriptor:
+            return self._persist_technical_error(
+                job,
+                InspectionError(
+                    code="WORKER_RUNTIME_DRIFT",
+                    stage="runtime",
+                    message="Worker runtime changed after startup.",
+                    retryable=False,
+                ),
+                worker_started=worker_started,
+                queue_wait_ms=queue_wait_ms,
+            )
+
         download_started = time.perf_counter()
         crop_reference = job.artifacts["label_crop"]
         crop_bytes = self.store.get_verified(
@@ -185,36 +209,153 @@ class InferenceWorker:
             )
         checksum_ms = (time.perf_counter() - checksum_started) * 1000.0
         decode_started = time.perf_counter()
-        label_crop = _decode_lossless_crop(
-            crop_bytes, max_image_pixels=self.max_image_pixels
-        )
+        try:
+            label_crop = _decode_lossless_crop(
+                crop_bytes, max_image_pixels=self.max_image_pixels
+            )
+        except (ImageTooLargeError, WorkerContractError):
+            # Oversized and malformed images are invalid/unrecoverable input;
+            # preserve their existing contract/DLQ behavior.
+            raise
+        except Exception:  # noqa: BLE001 - native decoder boundary
+            # A decoder/library failure is a technical processing failure. It
+            # must be durably recorded so the message can be ACKed after the
+            # result is persisted instead of being retried or dead-lettered.
+            image_decode_ms = (time.perf_counter() - decode_started) * 1000.0
+            processing_error = InspectionError(
+                code="IMAGE_DECODE_RUNTIME_ERROR",
+                stage="image_decode",
+                message="Image decoding failed.",
+                retryable=False,
+            )
+            return self._persist_technical_error(
+                job,
+                processing_error,
+                worker_started=worker_started,
+                artifact_download_ms=artifact_download_ms,
+                checksum_ms=checksum_ms,
+                image_decode_ms=image_decode_ms,
+                queue_wait_ms=queue_wait_ms,
+            )
         image_decode_ms = (time.perf_counter() - decode_started) * 1000.0
 
         prepared = _prepared_from_job(job, label_crop)
         processing_started_at_ms = epoch_ms_now()
-        local_result = self.processor.process(prepared)
         try:
-            business_status = BusinessStatus(local_result.validation.status)
-        except ValueError as exc:
-            raise WorkerContractError(
-                "Processor returned an unsupported business status."
-            ) from exc
+            local_result = self.processor.process(prepared)
+        except Exception:  # noqa: BLE001 - processing boundary must be durable
+            local_result = None
+            processing_error = InspectionError(
+                code="PROCESSING_RUNTIME_ERROR",
+                stage="processing",
+                message="Inspection processing failed.",
+                retryable=False,
+            )
+
+        if local_result is None:
+            business_status = None
+            processing_status = ProcessingStatus.ERROR
+            terminal_reasons = (processing_error.code,)
+            quality_payload = dict(job.quality)
+            inspection_payload = {
+                "event_id": job.event_id,
+                "camera_id": job.camera_id,
+                "extracted": {},
+                "evidence": [],
+                "validation": {
+                    "status": "ERROR",
+                    "reasons": list(terminal_reasons),
+                },
+                "error": processing_error.code,
+            }
+            local_timing = {}
+        else:
+            try:
+                processing_error = _technical_error_from_local_result(local_result)
+                quality_payload = local_result.quality.to_dict()
+                inspection_payload = local_result.to_dict()
+                local_timing = dict(local_result.timing)
+                semantic_decision_authorized = (
+                    self.runtime_descriptor.allows_automated_business_decision
+                )
+                if not semantic_decision_authorized:
+                    inspection_payload["extracted"] = {}
+                if processing_error is None:
+                    try:
+                        business_status = BusinessStatus(local_result.validation.status)
+                    except ValueError:
+                        processing_error = InspectionError(
+                            code="PROCESSOR_INVALID_STATUS",
+                            stage="processing",
+                            message="Processor returned an invalid business status.",
+                            retryable=False,
+                        )
+                        business_status = None
+                        processing_status = ProcessingStatus.ERROR
+                        terminal_reasons = (processing_error.code,)
+                    else:
+                        processing_status = ProcessingStatus.COMPLETED
+                        terminal_reasons = tuple(local_result.validation.reasons)
+                        if not semantic_decision_authorized:
+                            business_status = BusinessStatus.REVIEW
+                            review_reason = (
+                                self.runtime_descriptor.semantic_review_reason
+                            )
+                            # Validation reasons from an unauthorized semantic
+                            # path are no more trustworthy than its fields or
+                            # PASS/FAIL status. Preserve observations in their
+                            # evidence/quality payloads and publish only the
+                            # worker-owned gate reason.
+                            terminal_reasons = (review_reason,)
+                            inspection_payload["extracted"] = {}
+                            inspection_payload["validation"] = {
+                                "status": BusinessStatus.REVIEW.value,
+                                "reasons": list(terminal_reasons),
+                            }
+                else:
+                    business_status = None
+                    processing_status = ProcessingStatus.ERROR
+                    terminal_reasons = tuple(local_result.validation.reasons) or (
+                        processing_error.code,
+                    )
+            except Exception:  # noqa: BLE001 - malformed processor output is technical
+                processing_error = InspectionError(
+                    code="PROCESSOR_INVALID_RESULT",
+                    stage="processing",
+                    message="Inspection processor returned an invalid result.",
+                    retryable=False,
+                )
+                business_status = None
+                processing_status = ProcessingStatus.ERROR
+                terminal_reasons = (processing_error.code,)
+                quality_payload = dict(job.quality)
+                inspection_payload = {
+                    "event_id": job.event_id,
+                    "camera_id": job.camera_id,
+                    "extracted": {},
+                    "evidence": [],
+                    "validation": {
+                        "status": "ERROR",
+                        "reasons": [processing_error.code],
+                    },
+                    "error": processing_error.code,
+                }
+                local_timing = {}
         completed_at_ms = max(epoch_ms_now(), processing_started_at_ms)
-        local_timing = dict(local_result.timing)
         result = ContractInspectionResult(
             event_id=job.event_id,
             trigger_id=job.trigger_id,
             station_id=job.station_id,
             camera_id=job.camera_id,
-            processing_status=ProcessingStatus.COMPLETED,
+            processing_status=processing_status,
             business_status=business_status,
             inference_executed=True,
             created_at_ms=processing_started_at_ms,
             completed_at_ms=completed_at_ms,
-            reasons=tuple(local_result.validation.reasons),
-            quality=local_result.quality.to_dict(),
+            reasons=terminal_reasons,
+            quality=quality_payload,
             result_payload={
-                "inspection": local_result.to_dict(),
+                "inspection": inspection_payload,
                 "producer_provenance": dict(job.provenance),
                 "worker_runtime_provenance": self.runtime_descriptor.to_dict(),
                 "stage_timings": {
@@ -241,7 +382,101 @@ class InferenceWorker:
                     "artifact_download_ms": artifact_download_ms,
                 },
             },
+            error=processing_error,
         )
+        return self._persist_report(
+            job,
+            result,
+            worker_started=worker_started,
+            artifact_download_ms=artifact_download_ms,
+            checksum_ms=checksum_ms,
+            image_decode_ms=image_decode_ms,
+            queue_wait_ms=queue_wait_ms,
+        )
+
+    def _persist_technical_error(
+        self,
+        job: InspectionJob,
+        error: InspectionError,
+        *,
+        worker_started: float,
+        queue_wait_ms: float,
+        artifact_download_ms: float = 0.0,
+        checksum_ms: float = 0.0,
+        image_decode_ms: float = 0.0,
+    ) -> WorkerReport:
+        """Persist a terminal technical error without publishing business state."""
+
+        started_at_ms = epoch_ms_now()
+        result = ContractInspectionResult(
+            event_id=job.event_id,
+            trigger_id=job.trigger_id,
+            station_id=job.station_id,
+            camera_id=job.camera_id,
+            processing_status=ProcessingStatus.ERROR,
+            business_status=None,
+            inference_executed=False,
+            created_at_ms=started_at_ms,
+            completed_at_ms=max(epoch_ms_now(), started_at_ms),
+            reasons=(error.code,),
+            quality=dict(job.quality),
+            result_payload={
+                "inspection": {
+                    "event_id": job.event_id,
+                    "camera_id": job.camera_id,
+                    "extracted": {},
+                    "evidence": [],
+                    "validation": {
+                        "status": "ERROR",
+                        "reasons": [error.code],
+                    },
+                    "error": error.code,
+                },
+                "producer_provenance": dict(job.provenance),
+                "worker_runtime_provenance": self.runtime_descriptor.to_dict(),
+                "stage_timings": {
+                    "queue_wait_ms": queue_wait_ms,
+                    "artifact_download_ms": artifact_download_ms,
+                    "checksum_ms": checksum_ms,
+                    "image_decode_ms": image_decode_ms,
+                    "ocr_ms": 0.0,
+                    "barcode_ms": 0.0,
+                    "extraction_ms": 0.0,
+                    "validation_ms": 0.0,
+                    "processing_total_ms": 0.0,
+                },
+                "worker": {
+                    "processor": type(self.processor).__name__,
+                    "ocr_engine": getattr(self.processor.ocr, "engine", "unknown"),
+                    "startup_ms_excluded": self.startup_ms,
+                    "artifact_download_ms": artifact_download_ms,
+                },
+            },
+            error=error,
+        )
+        return self._persist_report(
+            job,
+            result,
+            worker_started=worker_started,
+            artifact_download_ms=artifact_download_ms,
+            checksum_ms=checksum_ms,
+            image_decode_ms=image_decode_ms,
+            queue_wait_ms=queue_wait_ms,
+        )
+
+    def _persist_report(
+        self,
+        job: InspectionJob,
+        result: ContractInspectionResult,
+        *,
+        worker_started: float,
+        artifact_download_ms: float,
+        checksum_ms: float,
+        image_decode_ms: float,
+        queue_wait_ms: float,
+    ) -> WorkerReport:
+        """Persist one terminal result and return the durable worker report."""
+
         result_bytes = _canonical_json_bytes(result.to_dict())
         result_reference = self.artifact_policy.result_reference(job, result_bytes)
         persist_started = time.perf_counter()
@@ -307,6 +542,25 @@ class InferenceWorker:
             raise WorkerResultConflictError(
                 "Existing durable result provenance conflicts with worker runtime."
             )
+        if not self.runtime_descriptor.allows_automated_business_decision:
+            inspection = result.result_payload.get("inspection", {})
+            extracted = (
+                inspection.get("extracted", {})
+                if isinstance(inspection, Mapping)
+                else None
+            )
+            unsafe_business_status = (
+                result.processing_status is ProcessingStatus.COMPLETED
+                and result.business_status is not BusinessStatus.REVIEW
+            )
+            if (
+                not isinstance(extracted, Mapping)
+                or bool(extracted)
+                or unsafe_business_status
+            ):
+                raise WorkerResultConflictError(
+                    "Existing durable result violates semantic authorization."
+                )
         return result, reference
 
 
@@ -327,7 +581,11 @@ def _parse_job(body: bytes, *, max_bytes: int) -> InspectionJob:
 
 
 def _decode_lossless_crop(content: bytes, *, max_image_pixels: int):
-    if len(content) < 24 or content[:8] != b"\x89PNG\r\n\x1a\n" or content[12:16] != b"IHDR":
+    if (
+        len(content) < 24
+        or content[:8] != b"\x89PNG\r\n\x1a\n"
+        or content[12:16] != b"IHDR"
+    ):
         raise WorkerContractError("Exact label crop is not a PNG image.")
     width = int.from_bytes(content[16:20], "big")
     height = int.from_bytes(content[20:24], "big")
@@ -342,6 +600,50 @@ def _decode_lossless_crop(content: bytes, *, max_image_pixels: int):
     if image is None or image.size == 0:
         raise WorkerContractError("Exact label crop is not a valid image.")
     return image
+
+
+def _technical_error_from_local_result(local_result) -> InspectionError | None:
+    """Translate processor stage failures into a durable technical error."""
+
+    raw_ocr = local_result.raw_ocr
+    if not raw_ocr.success:
+        return InspectionError(
+            code=raw_ocr.error_code or "OCR_ERROR",
+            stage="ocr",
+            message="OCR processing failed.",
+            retryable=False,
+        )
+
+    barcode = local_result.barcode
+    if not barcode.success:
+        return InspectionError(
+            code=barcode.error_code or "BARCODE_RUNTIME_ERROR",
+            stage="barcode",
+            message="Barcode processing failed.",
+            retryable=False,
+        )
+
+    if local_result.quality.status == "ERROR":
+        return InspectionError(
+            code="QUALITY_ERROR",
+            stage="quality",
+            message="Image quality processing failed.",
+            retryable=False,
+        )
+
+    if local_result.validation.status == "ERROR":
+        reason = (
+            local_result.validation.reasons[0]
+            if local_result.validation.reasons
+            else "PROCESSING_ERROR"
+        )
+        return InspectionError(
+            code=reason,
+            stage="processing",
+            message="Inspection processing failed.",
+            retryable=False,
+        )
+    return None
 
 
 def _prepared_from_job(job: InspectionJob, label_crop: object) -> PreparedInspection:

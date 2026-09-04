@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import re
-from typing import Mapping, Optional
+from collections.abc import Mapping
+from typing import Optional
 
-from ..schemas import BarcodeResult, ExtractedField, QualityReport, RawOCRResult, ValidationResult
+from ..contracts.profile import ProfileBinding
+from ..schemas import (
+    BarcodeResult,
+    ExtractedField,
+    QualityReport,
+    RawOCRResult,
+    ValidationResult,
+)
 
 
 class LabelValidator:
@@ -19,6 +27,7 @@ class LabelValidator:
         profile_name: str | None = None,
         profile_version: str | None = None,
         profile_approved: bool = False,
+        profile_binding: ProfileBinding | None = None,
     ) -> None:
         self.required_fields = tuple(field.lower() for field in required_fields)
         self.barcode_required = barcode_required
@@ -26,11 +35,36 @@ class LabelValidator:
             key.lower(): re.compile(pattern) for key, pattern in (field_patterns or {}).items()
         }
         self.min_field_confidence = min_field_confidence
-        self.profile_name = profile_name.strip() if profile_name and profile_name.strip() else None
-        self.profile_version = profile_version.strip() if profile_version and profile_version.strip() else None
-        if not isinstance(profile_approved, bool):
-            raise ValueError("profile_approved must be boolean")
-        self.profile_approved = profile_approved
+        if profile_binding is None:
+            self._profile_binding = ProfileBinding.from_legacy(
+                name=profile_name,
+                version=profile_version,
+                approved=profile_approved,
+            )
+        else:
+            if profile_name is not None or profile_version is not None or profile_approved:
+                raise ValueError(
+                    "profile binding cannot be combined with legacy profile arguments"
+                )
+            self._profile_binding = profile_binding
+
+    @property
+    def profile_binding(self) -> ProfileBinding:
+        """Return the immutable binding used by this validator."""
+
+        return self._profile_binding
+
+    @property
+    def profile_name(self) -> str | None:
+        return self._profile_binding.name
+
+    @property
+    def profile_version(self) -> str | None:
+        return self._profile_binding.version
+
+    @property
+    def profile_approved(self) -> bool:
+        return self._profile_binding.allows_automated_pass
 
     def validate(
         self,
@@ -54,27 +88,28 @@ class LabelValidator:
             reasons.append(raw_ocr.error_code or "OCR_ERROR")
             return ValidationResult(status="ERROR", reasons=tuple(reasons))
 
-        for field in self.required_fields:
-            item = extracted.get(field)
-            if item is None or not item.value:
-                review = True
-                reasons.append(f"MISSING_{field.upper()}")
-                continue
-            if item.confidence < self.min_field_confidence:
-                review = True
-                reasons.append(f"LOW_CONFIDENCE_{field.upper()}")
-            pattern = self.field_patterns.get(field)
-            if pattern and not pattern.fullmatch(item.value):
-                hard_fail = True
-                reasons.append(f"INVALID_{field.upper()}_FORMAT")
+        if self.profile_approved:
+            for field in self.required_fields:
+                item = extracted.get(field)
+                if item is None or not item.value:
+                    review = True
+                    reasons.append(f"MISSING_{field.upper()}")
+                    continue
+                if item.confidence < self.min_field_confidence:
+                    review = True
+                    reasons.append(f"LOW_CONFIDENCE_{field.upper()}")
+                pattern = self.field_patterns.get(field)
+                if pattern and not pattern.fullmatch(item.value):
+                    hard_fail = True
+                    reasons.append(f"INVALID_{field.upper()}_FORMAT")
 
         if not barcode.success:
-            review = True
             reasons.append(barcode.error_code or "BARCODE_RUNTIME_ERROR")
-        elif barcode.value and barcode.valid is False:
+            return ValidationResult(status="ERROR", reasons=tuple(reasons))
+        elif self.profile_approved and barcode.value and barcode.valid is False:
             hard_fail = True
             reasons.append("BARCODE_INVALID")
-        elif self.barcode_required and not barcode.value:
+        elif self.profile_approved and self.barcode_required and not barcode.value:
             review = True
             reasons.append("MISSING_BARCODE")
 

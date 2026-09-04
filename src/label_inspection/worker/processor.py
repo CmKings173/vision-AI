@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from ..barcode.base import BarcodeDecoder, NullBarcodeDecoder
+from ..contracts import DocumentRecognitionResult
 from ..extraction.evidence import collect_evidence
 from ..extraction.fields import FieldExtractor
 from ..ocr.base import OCRProvider
@@ -14,6 +15,7 @@ from ..schemas import (
     BarcodeResult,
     InspectionResult,
     RawOCRResult,
+    ValidationResult,
 )
 from ..timing import new_timing, timed
 from ..validation.rules import LabelValidator
@@ -29,6 +31,7 @@ class InspectionProcessor:
         barcode: BarcodeDecoder | None = None,
         extractor: FieldExtractor | None = None,
         validator: LabelValidator | None = None,
+        document_recognition: DocumentRecognitionResult | None = None,
     ) -> None:
         self.ocr = ocr
         self.barcode = barcode or NullBarcodeDecoder()
@@ -39,6 +42,27 @@ class InspectionProcessor:
             profile_version=None,
             profile_approved=False,
         )
+        if self.extractor.profile_binding != self.validator.profile_binding:
+            raise ValueError("profile binding mismatch between extractor and validator")
+        self._profile_binding = self.extractor.profile_binding
+        if document_recognition is not None:
+            if not isinstance(document_recognition, DocumentRecognitionResult):
+                raise TypeError(
+                    "document_recognition must be a DocumentRecognitionResult or None"
+                )
+            if document_recognition.profile_binding != self._profile_binding:
+                raise ValueError(
+                    "document recognition profile binding does not match processor"
+                )
+        self._document_recognition = document_recognition
+
+    @property
+    def profile_binding(self):
+        return self._profile_binding
+
+    @property
+    def document_recognition(self) -> DocumentRecognitionResult | None:
+        return self._document_recognition
 
     def process(self, prepared: PreparedInspection) -> InspectionResult:
         started = time.perf_counter()
@@ -67,7 +91,20 @@ class InspectionProcessor:
         evidence = collect_evidence(raw_ocr, decoded_barcodes)
 
         with timed(timing, "field_extraction_ms"):
-            extracted = self.extractor.extract(raw_ocr.lines, source=raw_ocr.engine)
+            if (
+                self.profile_binding.allows_automated_pass
+                and self.document_recognition is not None
+                and self.document_recognition.is_known
+            ):
+                extracted = self.extractor.extract(
+                    raw_ocr.lines,
+                    source=raw_ocr.engine,
+                )
+            else:
+                # Unapproved profiles remain evidence-only. Their patterns
+                # may be useful for offline analysis, but they must not emit
+                # canonical business fields into production results.
+                extracted = {}
 
         with timed(timing, "validation_ms"):
             validation = self.validator.validate(
@@ -76,6 +113,21 @@ class InspectionProcessor:
                 prepared.quality,
                 raw_ocr,
             )
+        semantic_path_enabled = (
+            self.profile_binding.allows_automated_pass
+            and self.document_recognition is not None
+            and self.document_recognition.is_known
+        )
+        if not semantic_path_enabled and validation.status != "ERROR":
+            reasons = list(validation.reasons)
+            reason = (
+                "NO_APPROVED_PROFILE"
+                if not self.profile_binding.allows_automated_pass
+                else "NO_TRUSTED_DOCUMENT_RECOGNITION"
+            )
+            if reason not in reasons:
+                reasons.append(reason)
+            validation = ValidationResult(status="REVIEW", reasons=tuple(reasons))
 
         timing["total_ms"] = (time.perf_counter() - started) * 1000.0
         return InspectionResult(

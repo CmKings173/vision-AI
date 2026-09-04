@@ -8,7 +8,8 @@ Align the current inspection runtime with the safety boundary in ADR-004:
   known profile;
 - configured profiles are the only source of semantic field extraction and
   profile-specific validation;
-- an unprofiled or unapproved semantic path can never produce `PASS`;
+- an unprofiled, unapproved, or unrecognized semantic path can never produce
+  `PASS`;
 - technical `ERROR` remains distinct from business `REVIEW`;
 - no business field mapping, document taxonomy, clustering policy, or
   multi-document policy is invented in this change.
@@ -40,11 +41,14 @@ Profile-free extraction returns no semantic fields and does not fail ingestion.
 
 ### 3. Fail-closed semantic validation
 
-Add profile identity and approval state to the validator configuration. A
-profile-free or unapproved processor may still return technical `ERROR` for a
-failed OCR/quality stage, but otherwise its business status is forced to
-`REVIEW` with an explicit no-approved-profile reason. Existing configured
-profile behavior remains available and retains the current field rules.
+Add one explicit profile binding, including identity and approval state, to the
+extractor, validator, processor, and worker provenance. A profile-free or
+unapproved processor may still return technical `ERROR` for a failed
+OCR/quality stage, but otherwise its business status is forced to `REVIEW`
+with an explicit no-approved-profile reason. Required fields, barcode policy,
+and semantic mappings are applied only for an explicitly approved binding and
+an explicit profile-bound `DocumentRecognitionResult` with status `KNOWN`.
+The current factory supplies no recognition result.
 
 ### 4. Distributed provenance compatibility
 
@@ -77,9 +81,9 @@ implying a storage technology.
   `PASS` or `FAIL`, when no technical error exists.
 - OCR/quality technical failure still returns `ERROR` and is not relabeled as
   a business result.
-- The named DGX Spark profile still extracts its configured fields and keeps
-its existing semantic-blocker provenance, while remaining ineligible for
-automated PASS until those blockers are resolved.
+- The named DGX Spark definition remains available for offline pattern analysis
+and keeps its semantic-blocker provenance, but its current unapproved runtime
+path emits no canonical fields and cannot authorize automated `PASS`.
 - A profile-free worker accepts `requested_profile: null`; a named worker
   rejects null or mismatched name/version, and named compatibility behavior is
   unchanged.

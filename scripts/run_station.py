@@ -21,6 +21,7 @@ from label_inspection.camera.frame_buffer import FrameBuffer
 from label_inspection.camera.rtsp import RTSPCamera
 from label_inspection.camera.security import resolve_camera_source
 from label_inspection.config import Settings
+from label_inspection.contracts import PROFILE_BINDING_VERSION
 from label_inspection.extraction.profiles import (
     DGX_SPARK_MAPPING_SUMMARY,
     DGX_SPARK_PROFILE_VERSION,
@@ -110,6 +111,7 @@ def build_station_runtime(config: Settings, source: str) -> StationRuntime:
         station_id=config.station_id,
         camera_id=config.camera_id,
         provenance={
+            "profile_contract_version": PROFILE_BINDING_VERSION,
             "requested_profile": (
                 None
                 if requested_profile is None

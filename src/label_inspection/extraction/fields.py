@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from itertools import pairwise
 
+from ..contracts.profile import ProfileBinding
 from ..schemas import ExtractedField, OCRLine
-
 
 DEFAULT_PATTERNS: dict[str, re.Pattern[str]] = {
     "sku": re.compile(
@@ -39,6 +40,7 @@ class FieldExtractor:
         allow_adjacent_line_values: bool = False,
         profile_name: str | None = "default",
         profile_version: str | None = "1.0",
+        profile_binding: ProfileBinding | None = None,
         semantic_blockers: Mapping[str, str] | None = None,
         mapping_summary: Mapping[str, str] | None = None,
     ) -> None:
@@ -50,19 +52,42 @@ class FieldExtractor:
         if patterns:
             self.patterns.update({key.lower(): value for key, value in patterns.items()})
         self.allow_adjacent_line_values = allow_adjacent_line_values
-        if fields is None and profile_name == "default":
+        if fields is None and profile_name == "default" and profile_binding is None:
             profile_name = None
             profile_version = None
-        self.profile_name = profile_name
-        self.profile_version = profile_version
+        self._profile_binding = profile_binding or ProfileBinding.from_legacy(
+            name=profile_name,
+            version=profile_version,
+        )
         self.semantic_blockers = dict(semantic_blockers or {})
         self.mapping_summary = dict(mapping_summary or {})
+
+    @property
+    def profile_binding(self) -> ProfileBinding:
+        """Return the immutable binding that authorizes semantic extraction."""
+
+        return self._profile_binding
+
+    @property
+    def profile_name(self) -> str | None:
+        return self._profile_binding.name
+
+    @property
+    def profile_version(self) -> str | None:
+        return self._profile_binding.version
+
+    @property
+    def profile_approved(self) -> bool:
+        return self._profile_binding.allows_automated_pass
 
     @classmethod
     def unprofiled(cls) -> FieldExtractor:
         """Create an extractor that only preserves upstream evidence."""
 
-        return cls(fields=(), profile_name=None, profile_version=None)
+        return cls(
+            fields=(),
+            profile_binding=ProfileBinding.unprofiled(),
+        )
 
     def extract(
         self,
@@ -70,6 +95,9 @@ class FieldExtractor:
         *,
         source: str = "ocr",
     ) -> dict[str, ExtractedField]:
+        if not self.profile_binding.allows_automated_pass:
+            return {}
+
         line_list = list(lines)
         extracted = {
             field: ExtractedField(value=None, reason="NOT_FOUND") for field in self.fields
@@ -90,7 +118,7 @@ class FieldExtractor:
                         min(float(line.confidence), float(next_line.confidence)),
                         f"{line.text} {next_line.text}",
                     )
-                    for line, next_line in zip(line_list, line_list[1:])
+                    for line, next_line in pairwise(line_list)
                 )
             for text, confidence, line_text in candidates:
                 match = pattern.search(text)

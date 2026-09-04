@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
+from .contracts.core import freeze_json, thaw_json
 
 STAGE_NOT_RUN = "NOT_RUN"
 STAGE_SUCCESS = "SUCCESS"
@@ -170,7 +172,13 @@ class EvidenceItem:
     confidence: Optional[float]
     source: str
     polygon: Optional[Any] = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.metadata, Mapping):
+            raise TypeError("evidence metadata must be an object")
+        object.__setattr__(self, "polygon", freeze_json(self.polygon))
+        object.__setattr__(self, "metadata", freeze_json(self.metadata))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -178,8 +186,8 @@ class EvidenceItem:
             "text": self.text,
             "confidence": self.confidence,
             "source": self.source,
-            "polygon": _json(self.polygon),
-            "metadata": _json(self.metadata),
+            "polygon": thaw_json(self.polygon),
+            "metadata": thaw_json(self.metadata),
         }
 
 

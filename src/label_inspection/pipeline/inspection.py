@@ -8,6 +8,7 @@ from collections.abc import Iterable
 
 from ..barcode.base import BarcodeDecoder
 from ..camera.selector import FrameSelector
+from ..contracts import DocumentRecognitionResult
 from ..detection.base import LabelDetector
 from ..extraction.fields import FieldExtractor
 from ..ocr.base import OCRProvider
@@ -49,6 +50,7 @@ class InspectionPipeline:
         station_id: str = "STATION-01",
         rotate_degrees: int = 0,
         bbox_padding_ratio: float = 0.05,
+        document_recognition: DocumentRecognitionResult | None = None,
         preparer: StationPreparer | None = None,
         processor: InspectionProcessor | None = None,
     ) -> None:
@@ -73,6 +75,7 @@ class InspectionPipeline:
                 barcode=barcode,
                 extractor=extractor,
                 validator=validator,
+                document_recognition=document_recognition,
             )
 
         self.preparer = preparer

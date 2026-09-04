@@ -1,14 +1,15 @@
 import json
 
 from label_inspection.schemas import (
+    STAGE_NOT_RUN,
     BarcodeResult,
+    EvidenceItem,
     ExtractedField,
     InspectionResult,
     LabelCandidate,
     OCRLine,
     QualityReport,
     RawOCRResult,
-    STAGE_NOT_RUN,
     ValidationResult,
 )
 
@@ -58,3 +59,23 @@ def test_schema_defaults_make_not_run_result_debuggable():
     assert result.quality.to_dict()["passed"] is None
     assert result.validation.status == "ERROR"
     assert result.validation.reasons == ("NOT_RUN",)
+
+
+def test_evidence_snapshots_nested_source_values():
+    polygon = [[1.0, 2.0], [3.0, 4.0]]
+    metadata = {"valid": True, "position": [5, 6]}
+    item = EvidenceItem(
+        kind="OCR_LINE",
+        text="NVIDIA P/N: ABC-001",
+        confidence=0.99,
+        source="ocr",
+        polygon=polygon,
+        metadata=metadata,
+    )
+
+    polygon[0][0] = 99.0
+    metadata["valid"] = False
+    metadata["position"][0] = 99
+
+    assert item.to_dict()["polygon"] == [[1.0, 2.0], [3.0, 4.0]]
+    assert item.to_dict()["metadata"] == {"valid": True, "position": [5, 6]}

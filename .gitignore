@@ -9,3 +9,10 @@ build/
 .env
 models/
 artifacts/
+
+# Large/generated directories
+datasets/
+dynamsoft/
+gx10_source_snapshot_*/
+pytest-of-*/
+phase1_input/

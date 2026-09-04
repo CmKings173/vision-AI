@@ -2,8 +2,9 @@
 
 ## Status
 
-Proposed. This ADR is a review and discussion baseline. It is not approval to
-change runtime behavior or deploy a new recognition policy.
+Accepted for the Phase 1 fail-closed safety boundary. Later phases remain
+proposed: no document-recognition model, approved-profile registry, automatic
+profile selection, or multi-document business policy is accepted by this ADR.
 
 ## Date
 
@@ -27,7 +28,7 @@ It covers:
 
 It does not decide:
 
-- runtime implementation, model deployment, or model selection;
+- recognition-model implementation, deployment, or model selection;
 - PostgreSQL migrations or the final database schema;
 - JWT, authentication, or users;
 - ERP integration or `erp_deliveries`;
@@ -66,7 +67,7 @@ The system therefore needs open-set/open-world behavior. It must be able to
 ingest and preserve evidence from a new document without requiring an approved
 business profile first.
 
-## Decision proposal
+## Decision
 
 The system SHOULD separate document ingestion, evidence extraction, document
 recognition, semantic mapping, and business validation.
@@ -550,7 +551,8 @@ The following decisions remain intentionally open:
 
 ## Guardrails
 
-Until this ADR is accepted and the business mappings are confirmed:
+Until the relevant business mappings and per-profile validation policies are
+approved:
 
 - unknown documents MUST NOT be forced into a known profile;
 - unknown and ambiguous recognition MUST result in `REVIEW`;
@@ -569,12 +571,34 @@ Until this ADR is accepted and the business mappings are confirmed:
 
 ## Current project impact
 
-This ADR changes documentation and architectural direction only. It does not
-change the current runtime pipeline, OCR/barcode threading, camera acquisition,
-FixedROI behavior, Local Spool behavior, database schema, authentication, or
-ERP integration.
+The Phase 1 safety subset is implemented in the current runtime:
 
-The current manual POC therefore continues to be understood as a controlled
-known-profile flow. Any future runtime change must be proposed and verified in
-separate implementation work after this ADR is accepted and the required
-business policies are available.
+- OCR, barcode decoding, and generic evidence collection run without a
+  profile;
+- profile-free, unapproved, unknown, and ambiguous paths persist evidence,
+  emit no canonical `extracted` fields, and return `REVIEW` after successful
+  technical processing;
+- the processor and the durable worker boundary independently require an
+  approved `ProfileBinding` plus a matching `DocumentRecognitionResult` with
+  status `KNOWN` before allowing `PASS` or `FAIL`;
+- the durable boundary does not publish canonical fields or business reasons
+  returned by an unauthorized semantic path; it preserves the underlying raw
+  evidence and publishes only its own profile/recognition review reason;
+- the worker persists the complete recognition state, reason, and profile
+  binding in runtime provenance, while retaining the derived legacy boolean;
+- the worker re-derives its runtime descriptor before each new inference and
+  persists `WORKER_RUNTIME_DRIFT` as a technical `ERROR` if startup identity
+  has changed;
+- process-wide required-field and barcode settings do not become policy for an
+  approved profile. The current factory fails startup for such a profile until
+  a profile-owned validation-policy boundary is implemented.
+
+The current factory supplies no trusted recognition result and no approved
+profile. The DGX Spark patterns therefore remain draft analysis definitions;
+they can support evidence evaluation but cannot emit production canonical
+fields or authorize a business decision.
+
+This implementation does not change OCR/barcode threading, camera acquisition,
+FixedROI behavior, Local Spool behavior, database schema, authentication, or
+ERP integration. Recognition models, an approved-profile registry, discovery
+ML, and multi-document business policy remain future work.

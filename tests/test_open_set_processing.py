@@ -1,3 +1,4 @@
+from label_inspection.extraction.profiles import build_extractor
 from label_inspection.pipeline.types import PreparedInspection
 from label_inspection.schemas import (
     BarcodeResult,
@@ -7,6 +8,7 @@ from label_inspection.schemas import (
     QualityReport,
     RawOCRResult,
 )
+from label_inspection.validation.rules import LabelValidator
 from label_inspection.worker.processor import InspectionProcessor
 
 
@@ -68,3 +70,33 @@ def test_unprofiled_processor_preserves_unknown_document_evidence_and_reviews():
         "UNKNOWN-DOC-001",
     ]
     assert result.to_dict()["evidence"][0]["text"] == "CUSTOMER LABEL / UNKNOWN FORMAT"
+
+
+class DGXOCR:
+    engine = "fake-ocr"
+
+    def recognize(self, image):
+        return RawOCRResult(
+            engine=self.engine,
+            lines=[OCRLine("NVIDIA P/N: ABC-001", 0.99)],
+        )
+
+
+def test_unapproved_dgx_profile_does_not_publish_canonical_fields():
+    extractor = build_extractor("dgx_spark_label")
+    processor = InspectionProcessor(
+        ocr=DGXOCR(),
+        barcode=ArbitraryBarcode(),
+        extractor=extractor,
+        validator=LabelValidator(profile_binding=extractor.profile_binding),
+    )
+
+    result = processor.process(_prepared())
+
+    assert result.extracted == {}
+    assert result.validation.status == "REVIEW"
+    assert "NO_APPROVED_PROFILE" in result.validation.reasons
+    assert [item.text for item in result.evidence] == [
+        "NVIDIA P/N: ABC-001",
+        "UNKNOWN-DOC-001",
+    ]

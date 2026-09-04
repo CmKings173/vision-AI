@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
+from ..contracts.profile import ProfileBinding
 from .fields import FieldExtractor
-
 
 DGX_SPARK_LABEL_FIELDS = (
     "customer_part_number",
@@ -21,12 +22,13 @@ DGX_SPARK_PROFILE_VERSION = "1.0"
 DGX_SPARK_SEMANTIC_BLOCKERS = {
     "customer_part_number": (
         "KNOWN_SEMANTIC_BLOCKER / NEEDS_BUSINESS_CONFIRMATION: "
-        "current production profile aliases Nvidia P/N to customer_part_number"
+        "draft pattern proposes Nvidia P/N to customer_part_number; "
+        "business approval is required"
     )
 }
 DGX_SPARK_MAPPING_SUMMARY = {
     "customer_part_number": (
-        "Current production aliases: Customer Part Number, Customer P/N, "
+        "Draft analysis aliases only: Customer Part Number, Customer P/N, "
         "Nvidia P/N, CPN -> customer_part_number"
     )
 }
@@ -71,6 +73,8 @@ DGX_SPARK_LABEL_PATTERNS = {
     ),
 }
 
+logger = logging.getLogger(__name__)
+
 
 def normalize_profile(profile: str | None) -> str | None:
     """Normalize profile configuration, including explicit profile-free mode."""
@@ -78,7 +82,12 @@ def normalize_profile(profile: str | None) -> str | None:
     if profile is None:
         return None
     normalized = profile.strip().lower().replace("-", "_")
-    if normalized in {"", "default", "none", "unprofiled"}:
+    if normalized == "default":
+        logger.warning(
+            "extraction profile 'default' is deprecated; use 'none' for profile-free processing"
+        )
+        return None
+    if normalized in {"", "none", "unprofiled"}:
         return None
     return normalized
 
@@ -92,8 +101,10 @@ def build_extractor(profile: str | None = None) -> FieldExtractor:
             fields=DGX_SPARK_LABEL_FIELDS,
             patterns=DGX_SPARK_LABEL_PATTERNS,
             allow_adjacent_line_values=True,
-            profile_name="dgx_spark_label",
-            profile_version=DGX_SPARK_PROFILE_VERSION,
+            profile_binding=ProfileBinding(
+                name="dgx_spark_label",
+                version=DGX_SPARK_PROFILE_VERSION,
+            ),
             semantic_blockers=DGX_SPARK_SEMANTIC_BLOCKERS,
             mapping_summary=DGX_SPARK_MAPPING_SUMMARY,
         )

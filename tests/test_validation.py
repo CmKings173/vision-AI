@@ -1,4 +1,9 @@
-from label_inspection.schemas import BarcodeResult, ExtractedField, QualityReport, RawOCRResult
+from label_inspection.schemas import (
+    BarcodeResult,
+    ExtractedField,
+    QualityReport,
+    RawOCRResult,
+)
 from label_inspection.validation.rules import LabelValidator
 
 
@@ -85,6 +90,23 @@ def test_profile_free_validation_is_review_even_when_evidence_is_readable():
     ).validate(
         {"unmapped_observation": ExtractedField("arbitrary", 0.99)},
         BarcodeResult(value=None),
+        QualityReport(status="PASS"),
+        raw(),
+    )
+
+    assert result.status == "REVIEW"
+    assert result.reasons == ("NO_APPROVED_PROFILE",)
+
+
+def test_unapproved_validator_does_not_apply_profile_business_rules():
+    result = LabelValidator(
+        required_fields=("sku",),
+        barcode_required=True,
+        profile_name="draft-label",
+        profile_version="1.0",
+    ).validate(
+        {},
+        BarcodeResult(value="BAD", valid=False),
         QualityReport(status="PASS"),
         raw(),
     )

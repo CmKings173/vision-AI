@@ -8,7 +8,11 @@ import pytest
 
 from label_inspection.camera.frame_buffer import FrameBuffer
 from label_inspection.camera.selector import FrameSelector
-from label_inspection.contracts import DeliveryStatus, ProcessingStatus
+from label_inspection.contracts import (
+    PROFILE_BINDING_VERSION,
+    DeliveryStatus,
+    ProcessingStatus,
+)
 from label_inspection.detection.contour import ContourDetector
 from label_inspection.detection.fixed_roi import FixedROIDetector
 from label_inspection.pipeline.ranking import CandidateScorer
@@ -201,6 +205,10 @@ def test_station_composition_records_actual_yolo_locator_provenance(
     runtime = run_station.build_station_runtime(config, "rtsp://camera")
     producer = runtime.service.controller.provenance["producer"]
 
+    assert runtime.service.controller.provenance["profile_contract_version"] == (
+        PROFILE_BINDING_VERSION
+    )
+    assert runtime.service.controller.provenance["requested_profile"] is None
     assert producer["locator_version"] == "ultralytics-yolo.v1"
     assert producer["locator"] == {
         "type": "ultralytics_yolo",

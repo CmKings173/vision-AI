@@ -157,6 +157,33 @@ class ExtractedField:
 
 
 @dataclass(frozen=True)
+class EvidenceItem:
+    """Profile-independent observation preserved before semantic mapping.
+
+    ``text`` is source evidence, not a canonical business-field value.  The
+    optional metadata is deliberately descriptive (for example barcode
+    format/validity) and must not be interpreted as a field mapping.
+    """
+
+    kind: str
+    text: Optional[str]
+    confidence: Optional[float]
+    source: str
+    polygon: Optional[Any] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "text": self.text,
+            "confidence": self.confidence,
+            "source": self.source,
+            "polygon": _json(self.polygon),
+            "metadata": _json(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
 class QualityReport:
     status: str = "PASS"
     state: Optional[str] = None
@@ -235,6 +262,7 @@ class InspectionResult:
     )
     timing: dict[str, float] = field(default_factory=dict)
     error: Optional[str] = None
+    evidence: list[EvidenceItem] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -246,6 +274,7 @@ class InspectionResult:
             "crop_bbox": _json(self.crop_bbox),
             "candidate_score": _json(self.candidate_score),
             "raw_ocr": _json(self.raw_ocr),
+            "evidence": [_json(item) for item in self.evidence],
             "extracted": {key: _json(value) for key, value in self.extracted.items()},
             "barcode": _json(self.barcode),
             "barcodes": [_json(item) for item in self.barcodes],

@@ -44,12 +44,8 @@ class WorkerRuntimeDescriptor:
             ),
             extractor={
                 **_component_descriptor(extractor),
-                "profile_name": str(
-                    getattr(extractor, "profile_name", "unknown")
-                ),
-                "profile_version": str(
-                    getattr(extractor, "profile_version", "unknown")
-                ),
+                "profile_name": getattr(extractor, "profile_name", None),
+                "profile_version": getattr(extractor, "profile_version", None),
                 "mapping_summary": dict(
                     getattr(extractor, "mapping_summary", {})
                 ),
@@ -68,11 +64,24 @@ class WorkerRuntimeDescriptor:
                 "barcode_required": bool(
                     getattr(validator, "barcode_required", False)
                 ),
+                "profile_name": getattr(validator, "profile_name", None),
+                "profile_version": getattr(validator, "profile_version", None),
+                "profile_approved": bool(
+                    getattr(validator, "profile_approved", False)
+                ),
             },
         )
 
     def assert_compatible(self, provenance: Mapping[str, Any]) -> None:
+        if "requested_profile" not in provenance:
+            raise ValueError("requested_profile is required")
         requested = provenance.get("requested_profile")
+        active_name = self.extractor.get("profile_name")
+        active_version = self.extractor.get("profile_version")
+        if requested is None:
+            if active_name is not None or active_version is not None:
+                raise ValueError("profile-free request is incompatible with a named worker profile")
+            return
         if not isinstance(requested, Mapping) or set(requested) != {
             "name",
             "version",
@@ -84,8 +93,10 @@ class WorkerRuntimeDescriptor:
         requested_version = require_text(
             requested["version"], "requested profile version"
         )
-        active_name = _normalize_profile(str(self.extractor["profile_name"]))
-        active_version = str(self.extractor["profile_version"])
+        if active_name is None or active_version is None:
+            raise ValueError("named profile request is incompatible with a profile-free worker")
+        active_name = _normalize_profile(str(active_name))
+        active_version = str(active_version)
         if (requested_name, requested_version) != (active_name, active_version):
             raise ValueError("requested profile is incompatible with worker runtime")
 

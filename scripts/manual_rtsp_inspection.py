@@ -224,6 +224,7 @@ def _result_payload(
         if result.candidate_score is not None
         else None,
         "quality": result.quality.to_dict(),
+        "evidence": [item.to_dict() for item in getattr(result, "evidence", [])],
         "ocr": result.raw_ocr.to_dict(),
         "barcode": {
             "status": barcode.get("status"),

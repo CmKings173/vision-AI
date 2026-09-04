@@ -148,7 +148,12 @@ def _worker(store, ocr=None, barcode=None):
         ocr=ocr,
         barcode=barcode,
         extractor=FieldExtractor(fields=("sku",)),
-        validator=LabelValidator(required_fields=("sku",)),
+        validator=LabelValidator(
+            required_fields=("sku",),
+            profile_name="test-profile",
+            profile_version="1.0",
+            profile_approved=True,
+        ),
     )
     return InferenceWorker(processor=processor, store=store), ocr, barcode
 

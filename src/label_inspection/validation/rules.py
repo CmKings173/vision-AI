@@ -12,10 +12,13 @@ class LabelValidator:
     def __init__(
         self,
         *,
-        required_fields: tuple[str, ...] = ("sku",),
+        required_fields: tuple[str, ...] = (),
         barcode_required: bool = False,
         field_patterns: Optional[Mapping[str, str]] = None,
         min_field_confidence: float = 0.7,
+        profile_name: str | None = None,
+        profile_version: str | None = None,
+        profile_approved: bool = False,
     ) -> None:
         self.required_fields = tuple(field.lower() for field in required_fields)
         self.barcode_required = barcode_required
@@ -23,6 +26,11 @@ class LabelValidator:
             key.lower(): re.compile(pattern) for key, pattern in (field_patterns or {}).items()
         }
         self.min_field_confidence = min_field_confidence
+        self.profile_name = profile_name.strip() if profile_name and profile_name.strip() else None
+        self.profile_version = profile_version.strip() if profile_version and profile_version.strip() else None
+        if not isinstance(profile_approved, bool):
+            raise ValueError("profile_approved must be boolean")
+        self.profile_approved = profile_approved
 
     def validate(
         self,
@@ -76,4 +84,13 @@ class LabelValidator:
             status = "REVIEW"
         else:
             status = "PASS"
+
+        # Semantic validation is opt-in.  Evidence may be fully available for
+        # an unknown document, but it is not safe to turn that evidence into a
+        # business PASS without an approved profile.
+        if self.profile_name is None or not self.profile_approved:
+            if "NO_APPROVED_PROFILE" not in reasons:
+                reasons.append("NO_APPROVED_PROFILE")
+            if status != "ERROR":
+                status = "REVIEW"
         return ValidationResult(status=status, reasons=tuple(reasons))

@@ -143,7 +143,12 @@ def test_station_to_worker_local_contract_integration(tmp_path):
         ocr=ocr,
         barcode=_ResidentBarcode(),
         extractor=FieldExtractor(fields=("sku",)),
-        validator=LabelValidator(required_fields=("sku",)),
+        validator=LabelValidator(
+            required_fields=("sku",),
+            profile_name="test-profile",
+            profile_version="1.0",
+            profile_approved=True,
+        ),
     )
     worker = InferenceWorker(processor=processor, store=store)
     worker.start()

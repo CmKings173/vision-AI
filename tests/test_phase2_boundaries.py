@@ -186,7 +186,12 @@ def test_worker_processor_runs_ocr_and_barcode_concurrently():
         ocr=ocr,
         barcode=ConcurrentBarcode(probe),
         extractor=FieldExtractor(fields=("sku",)),
-        validator=LabelValidator(required_fields=("sku",)),
+        validator=LabelValidator(
+            required_fields=("sku",),
+            profile_name="test-profile",
+            profile_version="1.0",
+            profile_approved=True,
+        ),
     )
 
     result = processor.process(outcome.prepared)
@@ -210,7 +215,12 @@ def test_worker_processor_consumes_the_exact_prepared_crop_without_reconstructio
         ocr=ocr,
         barcode=barcode,
         extractor=FieldExtractor(fields=("sku",)),
-        validator=LabelValidator(required_fields=("sku",)),
+        validator=LabelValidator(
+            required_fields=("sku",),
+            profile_name="test-profile",
+            profile_version="1.0",
+            profile_approved=True,
+        ),
     )
 
     result = processor.process(outcome.prepared)
@@ -230,7 +240,12 @@ def test_pipeline_execution_exposes_pre_inference_crop_snapshot():
             ocr=ocr,
             barcode=barcode,
             extractor=FieldExtractor(fields=("sku",)),
-            validator=LabelValidator(required_fields=("sku",)),
+        validator=LabelValidator(
+            required_fields=("sku",),
+            profile_name="test-profile",
+            profile_version="1.0",
+            profile_approved=True,
+        ),
         ),
     )
 

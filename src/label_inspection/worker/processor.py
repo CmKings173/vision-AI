@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from ..barcode.base import BarcodeDecoder, NullBarcodeDecoder
+from ..extraction.evidence import collect_evidence
 from ..extraction.fields import FieldExtractor
 from ..ocr.base import OCRProvider
 from ..pipeline.types import PreparedInspection
@@ -31,8 +32,13 @@ class InspectionProcessor:
     ) -> None:
         self.ocr = ocr
         self.barcode = barcode or NullBarcodeDecoder()
-        self.extractor = extractor or FieldExtractor()
-        self.validator = validator or LabelValidator()
+        self.extractor = extractor or FieldExtractor.unprofiled()
+        self.validator = validator or LabelValidator(
+            required_fields=(),
+            profile_name=None,
+            profile_version=None,
+            profile_approved=False,
+        )
 
     def process(self, prepared: PreparedInspection) -> InspectionResult:
         started = time.perf_counter()
@@ -58,6 +64,7 @@ class InspectionProcessor:
         timing["ocr_ms"] = ocr_ms
         timing["barcode_ms"] = barcode_ms
         timing["parallel_inference_ms"] = parallel_inference_ms
+        evidence = collect_evidence(raw_ocr, decoded_barcodes)
 
         with timed(timing, "field_extraction_ms"):
             extracted = self.extractor.extract(raw_ocr.lines, source=raw_ocr.engine)
@@ -80,6 +87,7 @@ class InspectionProcessor:
             crop_bbox=prepared.crop_bbox,
             candidate_score=prepared.candidate_score,
             raw_ocr=raw_ocr,
+            evidence=evidence,
             extracted=extracted,
             barcode=barcode_result,
             barcodes=decoded_barcodes,

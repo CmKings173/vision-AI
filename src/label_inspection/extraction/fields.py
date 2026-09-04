@@ -1,4 +1,4 @@
-"""Deterministic SKU/LOT extraction, kept separate from OCR inference."""
+"""Profile-scoped semantic field extraction, kept separate from OCR inference."""
 
 from __future__ import annotations
 
@@ -33,24 +33,36 @@ class FieldExtractor:
 
     def __init__(
         self,
-        fields: Iterable[str] = ("sku", "lot"),
+        fields: Iterable[str] | None = None,
         *,
         patterns: Mapping[str, re.Pattern[str]] | None = None,
         allow_adjacent_line_values: bool = False,
-        profile_name: str = "default",
-        profile_version: str = "1.0",
+        profile_name: str | None = "default",
+        profile_version: str | None = "1.0",
         semantic_blockers: Mapping[str, str] | None = None,
         mapping_summary: Mapping[str, str] | None = None,
     ) -> None:
-        self.fields = tuple(field.lower() for field in fields)
+        # Omitting fields is explicitly profile-free.  Keeping this different
+        # from an explicit field list prevents the old SKU/LOT defaults from
+        # silently becoming a closed-set production vocabulary.
+        self.fields = tuple(field.lower() for field in (fields or ()))
         self.patterns = dict(DEFAULT_PATTERNS)
         if patterns:
             self.patterns.update({key.lower(): value for key, value in patterns.items()})
         self.allow_adjacent_line_values = allow_adjacent_line_values
+        if fields is None and profile_name == "default":
+            profile_name = None
+            profile_version = None
         self.profile_name = profile_name
         self.profile_version = profile_version
         self.semantic_blockers = dict(semantic_blockers or {})
         self.mapping_summary = dict(mapping_summary or {})
+
+    @classmethod
+    def unprofiled(cls) -> FieldExtractor:
+        """Create an extractor that only preserves upstream evidence."""
+
+        return cls(fields=(), profile_name=None, profile_version=None)
 
     def extract(
         self,

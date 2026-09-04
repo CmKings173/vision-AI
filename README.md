@@ -242,8 +242,9 @@ export VISION_OCR_CHAR_DICT=models/ppocr/ppocr_keys_v1.txt
 ```
 
 The adapter currently expects the standard split PP-OCR DB detection and CTC
-recognition outputs. It keeps raw OCR lines in the existing result schema;
-FieldExtractor, ZXing, validation, and timing remain unchanged.
+recognition outputs. It keeps raw OCR lines and profile-independent evidence in
+the result schema. A named profile is required for semantic field extraction;
+without one, the result is preserved for review and cannot become `PASS`.
 
 Detector and transport dependencies are independent and are not needed for
 the FixedROI + PP-OCR + ZXing vertical slice. Install `.[detector]` when

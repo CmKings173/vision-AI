@@ -25,6 +25,7 @@ from label_inspection.extraction.profiles import (
     DGX_SPARK_MAPPING_SUMMARY,
     DGX_SPARK_PROFILE_VERSION,
     DGX_SPARK_SEMANTIC_BLOCKERS,
+    normalize_profile,
 )
 from label_inspection.messaging import (
     FrozenJobPublisher,
@@ -90,16 +91,16 @@ def build_station_runtime(config: Settings, source: str) -> StationRuntime:
         max_frame_age_ms=config.max_frame_age_ms,
     )
     acquisition = CameraAcquisition(camera, frame_buffer)
-    normalized_profile = config.extraction_profile.strip().lower().replace("-", "_")
+    normalized_profile = normalize_profile(config.extraction_profile)
     profile_version = (
         DGX_SPARK_PROFILE_VERSION
         if normalized_profile in {"dgx_spark", "dgx_spark_label"}
-        else "1.0"
+        else None
     )
     requested_profile = (
         "dgx_spark_label"
         if normalized_profile in {"dgx_spark", "dgx_spark_label"}
-        else "default"
+        else None
     )
     locator = _detector_provenance(preparer.detector)
     controller = StationController(
@@ -109,10 +110,14 @@ def build_station_runtime(config: Settings, source: str) -> StationRuntime:
         station_id=config.station_id,
         camera_id=config.camera_id,
         provenance={
-            "requested_profile": {
-                "name": requested_profile,
-                "version": profile_version,
-            },
+            "requested_profile": (
+                None
+                if requested_profile is None
+                else {
+                    "name": requested_profile,
+                    "version": profile_version,
+                }
+            ),
             "producer": {
                 "semantic_blockers": (
                     DGX_SPARK_SEMANTIC_BLOCKERS

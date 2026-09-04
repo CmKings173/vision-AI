@@ -72,10 +72,21 @@ DGX_SPARK_LABEL_PATTERNS = {
 }
 
 
-def build_extractor(profile: str = "default") -> FieldExtractor:
-    """Build a deterministic extractor for a named label profile."""
+def normalize_profile(profile: str | None) -> str | None:
+    """Normalize profile configuration, including explicit profile-free mode."""
 
+    if profile is None:
+        return None
     normalized = profile.strip().lower().replace("-", "_")
+    if normalized in {"", "default", "none", "unprofiled"}:
+        return None
+    return normalized
+
+
+def build_extractor(profile: str | None = None) -> FieldExtractor:
+    """Build a named semantic extractor or an explicitly profile-free one."""
+
+    normalized = normalize_profile(profile)
     if normalized in {"dgx_spark_label", "dgx_spark"}:
         return FieldExtractor(
             fields=DGX_SPARK_LABEL_FIELDS,
@@ -86,6 +97,6 @@ def build_extractor(profile: str = "default") -> FieldExtractor:
             semantic_blockers=DGX_SPARK_SEMANTIC_BLOCKERS,
             mapping_summary=DGX_SPARK_MAPPING_SUMMARY,
         )
-    if normalized == "default":
-        return FieldExtractor()
+    if normalized is None:
+        return FieldExtractor.unprofiled()
     raise ValueError(f"unsupported extraction profile: {profile}")

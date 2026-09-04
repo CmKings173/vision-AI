@@ -55,27 +55,27 @@ def build_processor(config: Settings = settings) -> InspectionProcessor:
     # Inference imports remain inside the worker factory. Importing or building
     # station-service therefore never imports model/decoder runtimes.
     from .barcode.zxing import ZXingBarcodeDecoder
-    from .extraction.fields import FieldExtractor
-    from .extraction.profiles import build_extractor
+    from .extraction.profiles import build_extractor, normalize_profile
     from .ocr.ppocr import PPOCRAdapter
     from .ocr.ppocr_v6 import PPOCRV6TransformersAdapter
     from .ocr.tensorrt_ocr import TensorRTOCRAdapter
     from .validation.rules import LabelValidator
     from .worker.processor import InspectionProcessor
 
-    profile = config.extraction_profile.strip().lower().replace("-", "_")
-    if profile == "default":
-        extractor_fields = tuple(
-            dict.fromkeys(("sku", "lot", *config.required_fields))
-        )
-        extractor = FieldExtractor(fields=extractor_fields)
-    else:
-        extractor = build_extractor(profile)
+    profile = normalize_profile(config.extraction_profile)
+    extractor = build_extractor(profile)
+    # A named profile that still carries semantic blockers is evidence-capable
+    # but not eligible to authorize an automated business PASS.
+    profile_enabled = extractor.profile_name is not None
+    profile_approved = profile_enabled and not bool(extractor.semantic_blockers)
 
     validator = LabelValidator(
-        required_fields=config.required_fields,
+        required_fields=config.required_fields if profile_enabled else (),
         barcode_required=config.barcode_required,
         min_field_confidence=config.ocr_confidence,
+        profile_name=extractor.profile_name,
+        profile_version=extractor.profile_version,
+        profile_approved=profile_approved,
     )
     ocr_name = config.ocr_engine.strip().lower().replace("_", "-")
     if ocr_name == "ppocr-v6":

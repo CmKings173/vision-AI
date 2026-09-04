@@ -443,9 +443,16 @@ class Settings:
         if self.barcode_engine.strip().lower() != "zxing":
             raise ValueError("VISION_BARCODE_ENGINE must be 'zxing' for V1")
         profile = self.extraction_profile.strip().lower().replace("-", "_")
-        if profile not in {"default", "dgx_spark", "dgx_spark_label"}:
+        if profile not in {
+            "default",
+            "none",
+            "unprofiled",
+            "dgx_spark",
+            "dgx_spark_label",
+        }:
             raise ValueError(
-                "VISION_EXTRACTION_PROFILE must be 'default' or 'dgx_spark_label'"
+                "VISION_EXTRACTION_PROFILE must be 'default', 'none', "
+                "'unprofiled', or 'dgx_spark_label'"
             )
 
     def validate_phase2_transport(self) -> None:
@@ -511,7 +518,7 @@ class Settings:
 
 
 def _required_fields() -> tuple[str, ...]:
-    raw = os.getenv("VISION_REQUIRED_FIELDS", "sku")
+    raw = os.getenv("VISION_REQUIRED_FIELDS", "")
     return tuple(item.strip().lower() for item in raw.split(",") if item.strip())
 
 

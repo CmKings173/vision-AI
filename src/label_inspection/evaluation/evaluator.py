@@ -717,6 +717,9 @@ def _prediction_payload(
         "business_status": production_result.validation.status,
         "production_decision": production_validation,
         "fields": {key: value.to_dict() for key, value in evidence_result.extracted.items()},
+        "evidence": [
+            item.to_dict() for item in getattr(evidence_result, "evidence", [])
+        ],
         "ocr": evidence_result.raw_ocr.to_dict(),
         "barcode": _barcode_payload(evidence_result),
         "quality": production_result.quality.to_dict(),
@@ -752,6 +755,7 @@ def _observation_payload(result: Any) -> dict[str, Any]:
         "validation": result.validation.to_dict(),
         "ocr": result.raw_ocr.to_dict(),
         "fields": {key: value.to_dict() for key, value in result.extracted.items()},
+        "evidence": [item.to_dict() for item in getattr(result, "evidence", [])],
         "barcode": _barcode_payload(result),
         "quality": result.quality.to_dict(),
         "timings": dict(result.timing),

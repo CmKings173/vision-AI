@@ -50,6 +50,29 @@ def test_separate_ocr_device_and_confidence_are_wired():
     assert pipeline.validator.min_field_confidence == 0.83
 
 
+def test_default_pipeline_is_profile_free_and_cannot_semantically_pass():
+    pipeline = build_pipeline(valid_settings())
+
+    assert pipeline.extractor.fields == ()
+    assert pipeline.extractor.profile_name is None
+    assert pipeline.validator.required_fields == ()
+    assert pipeline.validator.profile_name is None
+    assert pipeline.validator.profile_approved is False
+
+
+def test_dgx_profile_keeps_semantic_blocker_and_cannot_authorize_pass():
+    pipeline = build_pipeline(
+        valid_settings(
+            extraction_profile="dgx_spark_label",
+            required_fields=("customer_part_number",),
+        )
+    )
+
+    assert pipeline.extractor.profile_name == "dgx_spark_label"
+    assert pipeline.extractor.semantic_blockers
+    assert pipeline.validator.profile_approved is False
+
+
 def test_trained_yolo_detector_is_wired_with_normalized_gpu_device(monkeypatch, tmp_path):
     class FakeYOLO:
         names: ClassVar = {0: "shipping_label"}
@@ -145,12 +168,8 @@ def test_ppocr_v6_transformers_engine_is_wired_without_loading_runtime():
     assert isinstance(pipeline.ocr, PPOCRV6TransformersAdapter)
     assert pipeline.ocr.engine == "ppocr_v6"
     assert pipeline.ocr.backend == "transformers"
-    assert set(pipeline.extractor.fields) == {
-        "sku",
-        "lot",
-        "tracking_number",
-        "order_id",
-    }
+    assert pipeline.extractor.fields == ()
+    assert pipeline.validator.required_fields == ()
 
 
 def test_dgx_spark_extraction_profile_wires_only_label_fields():
